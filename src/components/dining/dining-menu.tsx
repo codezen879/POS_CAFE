@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Check, Minus, Plus, ShoppingBag, X } from "lucide-react";
 import toast from "react-hot-toast";
@@ -15,13 +15,25 @@ export function DiningMenu({ store, categories, table }: any) {
   const [selectedAddons, setSelectedAddons] = useState<Record<string, boolean>>({});
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<{ count: number; tableName: string } | null>(null);
+  const [openTables, setOpenTables] = useState<any[]>([]);
+  const [guestTableId, setGuestTableId] = useState<string | null>(null);
+
+  const tableLocked = !!table?.id && !table?.sessions?.[0];
+  const canAdd = !tableLocked;
+  const targetTableId = table?.id || guestTableId;
+  const targetTableName = table?.tableName || openTables.find((t) => t.id === guestTableId)?.tableName;
+
+  useEffect(() => {
+    if (table?.id) return;
+    fetch("/api/m/tables")
+      .then((r) => r.json())
+      .then((d) => setOpenTables(d.tables ?? []))
+      .catch(() => {});
+  }, [table?.id]);
 
   const activeProducts = categories.find((c: any) => c.id === activeCat)?.products ?? [];
   const cartCount = lines.reduce((s, l) => s + l.quantity, 0);
   const summary = useMemo(() => computeSummary(lines), [lines]);
-
-  const sessionOpen = !!table?.sessions?.[0];
-  const canOrder = !!table?.id && sessionOpen;
 
   function openPicker(product: any) {
     setSelectedAddons({});
@@ -45,7 +57,7 @@ export function DiningMenu({ store, categories, table }: any) {
     if (!picker) return;
     const addons: CartAddon[] = (picker.addons ?? [])
       .map((a: any) => a.addon)
-      .filter((a: any) => selectedAddons[a.id])
+      .filter((a: any) => a?.isActive && selectedAddons[a.id])
       .map((a: any) => ({ id: a.id, name: a.name, price: Number(a.price) || 0, quantity: 1 }));
     addItem({
       productId: picker.id,
@@ -59,14 +71,14 @@ export function DiningMenu({ store, categories, table }: any) {
   }
 
   async function sendOrder() {
-    if (!canOrder || lines.length === 0) return;
+    if (!targetTableId || lines.length === 0) return;
     setSending(true);
     try {
       const res = await fetch("/api/m/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          tableId: table.id,
+          tableId: targetTableId,
           items: lines.map((l) => ({
             productId: l.productId,
             quantity: l.quantity,
@@ -77,7 +89,7 @@ export function DiningMenu({ store, categories, table }: any) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to send order");
-      setSent({ count: cartCount, tableName: table.tableName });
+      setSent({ count: cartCount, tableName: targetTableName || "" });
       clearCart();
       setCartOpen(false);
     } catch (e: any) {
@@ -99,12 +111,10 @@ export function DiningMenu({ store, categories, table }: any) {
           )}
         </div>
         <div className="mt-0.5 text-xs opacity-80">{store?.address ? `${store.address}${store.city ? `, ${store.city}` : ""}` : ""}</div>
-        {canOrder ? (
-          <div className="mt-4 text-sm opacity-90">Tap items to add them, then send your order to the kitchen.</div>
-        ) : table?.id ? (
+        {tableLocked ? (
           <div className="mt-4 text-sm font-medium opacity-90">This table isn&apos;t open yet — please ask your server.</div>
         ) : (
-          <div className="mt-4 text-sm opacity-90">Browse our menu. To order, scan the QR code on your table.</div>
+          <div className="mt-4 text-sm opacity-90">Tap items to add them, then send your order to the kitchen.</div>
         )}
       </div>
 
@@ -128,7 +138,15 @@ export function DiningMenu({ store, categories, table }: any) {
           const addons = p.addons?.filter((a: any) => a.addon?.isActive) ?? [];
           const hasAddons = addons.length > 0;
           return (
-            <div key={p.id} className="rounded-xl border bg-card p-4">
+            <button
+              key={p.id}
+              onClick={() => (hasAddons ? openPicker(p) : addProduct(p))}
+              disabled={!canAdd}
+              className={cn(
+                "w-full rounded-xl border bg-card p-4 text-left transition-transform active:scale-[0.98]",
+                canAdd ? "border-neutral-200" : "cursor-not-allowed opacity-50"
+              )}
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-2">
                   <span className={cn("mt-1 h-3.5 w-3.5 rounded-sm border-2", p.isVeg ? "border-green-600" : "border-red-600")} />
@@ -144,20 +162,18 @@ export function DiningMenu({ store, categories, table }: any) {
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <div className="whitespace-nowrap font-bold">{formatCurrency(p.basePrice)}</div>
-                  <button
-                    onClick={() => (hasAddons ? openPicker(p) : addProduct(p))}
-                    disabled={!canOrder}
+                  <span
                     className={cn(
-                      "flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground transition-opacity",
-                      !canOrder && "cursor-not-allowed opacity-40"
+                      "pointer-events-none flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold",
+                      canAdd ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
                     )}
                   >
                     <Plus className="h-3.5 w-3.5" />
                     {hasAddons ? "Customize" : "Add"}
-                  </button>
+                  </span>
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
         {activeProducts.length === 0 && (
@@ -165,7 +181,7 @@ export function DiningMenu({ store, categories, table }: any) {
         )}
       </div>
 
-      {canOrder && cartCount > 0 && (
+      {canAdd && cartCount > 0 && (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             onClick={() => setCartOpen(true)}
@@ -180,13 +196,13 @@ export function DiningMenu({ store, categories, table }: any) {
         </div>
       )}
 
-      {cartOpen && canOrder && (
+      {cartOpen && canAdd && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/40" onClick={() => setCartOpen(false)} />
           <div className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-2xl bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <div className="mb-3 flex items-center justify-between">
               <div className="text-lg font-bold">Your order</div>
-              <button onClick={() => setCartOpen(false)} className="rounded-full p-1 hover:bg-muted">
+              <button onClick={() => setCartOpen(false)} className="rounded-full p-1 hover:bg-muted" aria-label="Close cart">
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -229,16 +245,41 @@ export function DiningMenu({ store, categories, table }: any) {
                 </div>
               ))}
             </div>
+            {!table?.id && (
+              <div className="mt-4 rounded-xl border bg-muted/40 p-3">
+                <div className="text-xs font-semibold text-muted-foreground">Choose your table</div>
+                {openTables.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {openTables.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => setGuestTableId(t.id === guestTableId ? null : t.id)}
+                        className={cn(
+                          "rounded-full px-3 py-1.5 text-sm font-medium",
+                          guestTableId === t.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                        )}
+                      >
+                        {t.tableName}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    No open tables right now — please ask your server to open your table.
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mt-4 flex items-center justify-between border-t pt-3">
               <span className="text-sm text-muted-foreground">Total</span>
               <span className="text-lg font-bold">{formatCurrency(summary.total)}</span>
             </div>
             <button
               onClick={sendOrder}
-              disabled={sending || lines.length === 0}
+              disabled={sending || lines.length === 0 || !targetTableId}
               className="mt-4 w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground disabled:opacity-50"
             >
-              {sending ? "Sending..." : "Send order to kitchen"}
+              {sending ? "Sending..." : !table?.id && !targetTableId ? "Pick your table, then send" : "Send order to kitchen"}
             </button>
           </div>
         </div>
@@ -250,28 +291,31 @@ export function DiningMenu({ store, categories, table }: any) {
           <div className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-2xl bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <div className="mb-3 flex items-center justify-between">
               <div className="text-lg font-bold">{picker.name}</div>
-              <button onClick={() => setPicker(null)} className="rounded-full p-1 hover:bg-muted">
+              <button onClick={() => setPicker(null)} className="rounded-full p-1 hover:bg-muted" aria-label="Close">
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="mb-2 text-sm text-muted-foreground">{picker.description}</div>
             <div className="space-y-2">
-              {(picker.addons ?? []).map(({ addon }: any) => addon?.isActive ? (
-                <button
-                  key={addon.id}
-                  onClick={() => setSelectedAddons((s) => ({ ...s, [addon.id]: !s[addon.id] }))}
-                  className={cn(
-                    "flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left",
-                    selectedAddons[addon.id] ? "border-primary bg-primary/5" : "border-muted"
-                  )}
-                >
-                  <span className="text-sm font-medium">{addon.name}</span>
-                  <span className="flex items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">+{formatCurrency(addon.price)}</span>
-                    {selectedAddons[addon.id] && <Check className="h-4 w-4 text-primary" />}
-                  </span>
-                </button>
-              ) : null)}
+              {(picker.addons ?? []).map(({ addon }: any) =>
+                addon?.isActive ? (
+                  <button
+                    key={addon.id}
+                    onClick={() => setSelectedAddons((s) => ({ ...s, [addon.id]: !s[addon.id] }))}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left",
+                      selectedAddons[addon.id] ? "border-primary bg-primary/5" : "border-muted"
+                    )}
+                    aria-pressed={selectedAddons[addon.id] || undefined}
+                  >
+                    <span className="text-sm font-medium">{addon.name}</span>
+                    <span className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">+{formatCurrency(addon.price)}</span>
+                      {selectedAddons[addon.id] && <Check className="h-4 w-4 text-primary" />}
+                    </span>
+                  </button>
+                ) : null
+              )}
             </div>
             <div className="mt-4 flex items-center justify-between rounded-xl border px-3 py-2.5">
               <span className="text-sm font-medium">Quantity</span>
@@ -285,7 +329,10 @@ export function DiningMenu({ store, categories, table }: any) {
                 </button>
               </span>
             </div>
-            <button onClick={addCustomized} className="mt-4 w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground">
+            <button
+              onClick={addCustomized}
+              className="mt-4 w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground"
+            >
               Add {pickerQty} to your order
             </button>
           </div>
