@@ -34,11 +34,14 @@ export function TableGrid({ tables, menu, store, customers, isManager }: { table
   const [openDialog, setOpenDialog] = useState<TableType | null>(null);
   const [terminalTable, setTerminalTable] = useState<TableType | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
+  const [qrSel, setQrSel] = useState<string>("menu");
   const [manageOpen, setManageOpen] = useState(false);
 
   const occupiedCount = tables.filter((t) => t.status === "OCCUPIED").length;
-
+  const openTables = tables.filter((t) => t.status === "OCCUPIED" && t.sessions[0]);
   const menuUrl = typeof window !== "undefined" ? `${window.location.origin}/m` : "/m";
+  const qrValue = qrSel === "menu" ? menuUrl : `${menuUrl}?table=${qrSel}`;
+  const qrLabel = qrSel === "menu" ? "Restaurant menu" : `Table ${openTables.find((t) => t.id === qrSel)?.tableName ?? ""}`;
 
   return (
     <div className="space-y-6">
@@ -127,12 +130,41 @@ export function TableGrid({ tables, menu, store, customers, isManager }: { table
             <DialogTitle className="text-center">Digital Menu</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col items-center gap-4">
+            <div className="flex flex-wrap justify-center gap-2">
+              <button
+                onClick={() => setQrSel("menu")}
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs font-medium",
+                  qrSel === "menu" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                )}
+              >
+                Menu
+              </button>
+              {openTables.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setQrSel(t.id)}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-xs font-medium",
+                    qrSel === t.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {t.tableName}
+                </button>
+              ))}
+              {openTables.length === 0 && <span className="text-xs text-muted-foreground">No open tables yet</span>}
+            </div>
             <div className="rounded-xl border-4 border-neutral-100 bg-white p-4">
-              <QRCodeSVG value={menuUrl} size={220} />
+              <QRCodeSVG value={qrValue} size={220} />
             </div>
             <div className="text-center">
-              <div className="text-sm font-medium">{menuUrl}</div>
-              <p className="mt-1 text-xs text-muted-foreground">Guests scan this QR to browse the menu on their phone.</p>
+              <div className="text-sm font-medium">{qrLabel}</div>
+              <div className="mt-0.5 break-all text-xs text-muted-foreground">{qrValue}</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {qrSel === "menu"
+                  ? "Generic menu link for guests to browse."
+                  : "Guests scan this to order directly to this table."}
+              </p>
             </div>
           </div>
         </DialogContent>

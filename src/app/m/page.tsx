@@ -4,8 +4,14 @@ import { toPlain } from "@/lib/serialize";
 
 export const dynamic = "force-dynamic";
 
-export default async function PublicMenuPage() {
-  const [store, categories] = await Promise.all([
+export default async function PublicMenuPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ table?: string }>;
+}) {
+  const { table: tableId } = await searchParams;
+
+  const [store, categories, table] = await Promise.all([
     prisma.store.findFirst(),
     prisma.menuCategory.findMany({
       where: { isActive: true },
@@ -20,7 +26,23 @@ export default async function PublicMenuPage() {
         },
       },
     }),
+    tableId
+      ? prisma.diningTable.findUnique({
+          where: { id: tableId },
+          select: {
+            id: true,
+            tableName: true,
+            sessions: { where: { status: "OPEN" }, orderBy: { openedAt: "desc" }, take: 1, select: { id: true } },
+          },
+        })
+      : Promise.resolve(null),
   ]);
 
-  return <DiningMenu store={toPlain(store) as any} categories={toPlain(categories) as any} />;
+  return (
+    <DiningMenu
+      store={toPlain(store) as any}
+      categories={toPlain(categories) as any}
+      table={toPlain(table) as any}
+    />
+  );
 }
