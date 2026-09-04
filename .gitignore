@@ -34,3 +34,5 @@ next-env.d.ts
 /src/generated/
 
 .vercel
+prod-server.log
+
