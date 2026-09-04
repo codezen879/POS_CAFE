@@ -1,0 +1,349 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { X, Plus, Minus, Send, ReceiptText, IndianRupee, Loader2, Trash2, ShoppingBag, ChefHat } from "lucide-react";
+import { cn, formatCurrency } from "@/lib/utils";
+import { useCart, type CartLine } from "@/store/cart";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import toast from "react-hot-toast";
+import { BillView } from "./bill-view";
+
+type TableType = {
+  id: string;
+  tableName: string;
+  seatCount: number;
+  status: string;
+  sessions: { id: string; sessionNumber: string; guestCount: number; customer: { name: string | null; phone: string | null; loyaltyPoints: number } | null; orders: any[] }[];
+};
+
+type ProductType = {
+  id: string;
+  name: string;
+  code: string | null;
+  basePrice: number;
+  description: string | null;
+  isVeg: boolean;
+  isBestseller: boolean;
+  isAvailable: boolean;
+  prepTimeMins: number | null;
+  addons: { addon: { id: string; name: string; price: number; flavour: string | null } }[];
+};
+
+export function TableTerminal({
+  table,
+  menu,
+  store,
+  onClose,
+  onChanged,
+}: {
+  table: TableType | null;
+  menu: any[];
+  store: any;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [activeCat, setActiveCat] = useState<string | null>(null);
+  const [view, setView] = useState<"order" | "bill">("order");
+  const [addonFor, setAddonFor] = useState<ProductType | null>(null);
+  const [addonSel, setAddonSel] = useState<Record<string, number>>({});
+  const [sending, setSending] = useState(false);
+  const [loadingBill, setLoadingBill] = useState(false);
+
+  const { lines, addItem, removeItem, updateQty, clearCart, setOrderId } = useCart();
+
+  const session = table?.sessions[0];
+
+  useEffect(() => {
+    if (table) {
+      setActiveCat(menu[0]?.id ?? null);
+      setView("order");
+      clearCart();
+    }
+  }, [table, menu, clearCart]);
+
+  const activeProducts: ProductType[] = useMemo(() => {
+    const cat = menu.find((c) => c.id === activeCat);
+    return cat?.products ?? [];
+  }, [menu, activeCat]);
+
+  const cartTotal = useMemo(() => lines.reduce((s, l) => s + (l.unitPrice + l.addons.reduce((x, a) => x + a.price * a.quantity, 0)) * l.quantity, 0), [lines]);
+
+  if (!table || !session) return null;
+
+  const sessionOrders = session.orders;
+
+  function openAddonPicker(product: ProductType) {
+    const applicable = product.addons.map((a) => a.addon);
+    if (applicable.length === 0) {
+      addItem({ productId: product.id, name: product.name, unitPrice: Number(product.basePrice), quantity: 1, addons: [] });
+      return;
+    }
+    setAddonFor(product);
+    setAddonSel({});
+  }
+
+  function confirmAddon() {
+    if (!addonFor) return;
+    const chosen = Object.entries(addonSel)
+      .filter(([, q]) => q > 0)
+      .map(([id, q]) => {
+        const addon = addonFor.addons.find((a) => a.addon.id === id)!.addon;
+        return { id, name: addon.name, price: Number(addon.price), quantity: q };
+      });
+    addItem({
+      productId: addonFor.id,
+      name: addonFor.name,
+      unitPrice: Number(addonFor.basePrice),
+      quantity: 1,
+      addons: chosen,
+    });
+    setAddonFor(null);
+    setAddonSel({});
+  }
+
+  async function sendToKitchen() {
+    if (lines.length === 0) return;
+    if (!session) return;
+    setSending(true);
+    try {
+      const items = lines.map((l) => ({
+        productId: l.productId,
+        name: l.name,
+        unitPrice: l.unitPrice,
+        quantity: l.quantity,
+        note: l.note,
+        addons: l.addons.map((a) => ({ id: a.id, name: a.name, price: a.price, quantity: a.quantity })),
+      }));
+      const res = await fetch(`/api/pos/sessions/${session.id}/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items, type: "DINE_IN" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send order");
+      toast.success("Order sent to kitchen");
+      clearCart();
+      onChanged();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!table} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-6xl gap-0 p-0 sm:rounded-2xl">
+        <DialogHeader className="flex-row items-center justify-between border-b px-5 py-4">
+          <div className="flex items-center gap-3">
+            <DialogTitle>
+              {table.tableName} · {session.sessionNumber}
+            </DialogTitle>
+            <span className="text-muted-foreground text-sm">
+              {session.guestCount} guest{session.guestCount > 1 ? "s" : ""}
+            </span>
+            {session.customer?.name && (
+              <span className="text-sm text-muted-foreground">· {session.customer.name}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 rounded-lg bg-muted p-1">
+            <button
+              onClick={() => setView("order")}
+              className={cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium", view === "order" ? "bg-card shadow" : "text-muted-foreground")}
+            >
+              <ShoppingBag className="h-4 w-4" /> Order
+            </button>
+            <button
+              onClick={() => setView("bill")}
+              className={cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium", view === "bill" ? "bg-card shadow" : "text-muted-foreground")}
+            >
+              <ReceiptText className="h-4 w-4" /> Bill
+            </button>
+          </div>
+        </DialogHeader>
+
+        <div className="max-h-[70vh] overflow-y-auto">
+          {view === "order" ? (
+            <div className="grid md:grid-cols-[1fr_340px]">
+              <OrderMenu
+                menu={menu}
+                activeCat={activeCat}
+                setActiveCat={setActiveCat}
+                activeProducts={activeProducts}
+                onPick={openAddonPicker}
+              />
+              <CartPanel
+                lines={lines}
+                cartTotal={cartTotal}
+                updateQty={updateQty}
+                removeItem={removeItem}
+                sending={sending}
+                onSend={sendToKitchen}
+                orderCount={sessionOrders.length}
+              />
+            </div>
+          ) : (
+            <BillView
+              sessionId={session.id}
+              store={store}
+              onChanged={onChanged}
+              onClose={onClose}
+            />
+          )}
+        </div>
+
+        {addonFor && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-sm rounded-xl bg-card p-5 shadow-xl">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="font-semibold">{addonFor.name} · Add-ons</h3>
+                <button onClick={() => setAddonFor(null)}><X className="h-5 w-5" /></button>
+              </div>
+              <div className="space-y-3">
+                {addonFor.addons.map((a) => (
+                  <div key={a.addon.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <div className="text-sm font-medium">{a.addon.name}</div>
+                      <div className="text-xs text-muted-foreground">{formatCurrency(a.addon.price)}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setAddonSel((s) => ({ ...s, [a.addon.id]: Math.max(0, (s[a.addon.id] ?? 0) - 1) }))}
+                        className="rounded-md border p-1"
+                      >
+                        <Minus className="h-4 w-4" />
+                      </button>
+                      <span className="w-6 text-center">{addonSel[a.addon.id] ?? 0}</span>
+                      <button
+                        onClick={() => setAddonSel((s) => ({ ...s, [a.addon.id]: (s[a.addon.id] ?? 0) + 1 }))}
+                        className="rounded-md border p-1"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Button className="mt-4 w-full" onClick={confirmAddon}>
+                Add to cart
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OrderMenu({ menu, activeCat, setActiveCat, activeProducts, onPick }: any) {
+  return (
+    <div className="border-r">
+      <div className="flex gap-2 overflow-x-auto border-b p-3 scrollbar-thin">
+        {menu.map((c: any) => (
+          <button
+            key={c.id}
+            onClick={() => setActiveCat(c.id)}
+            className={cn(
+              "whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium",
+              activeCat === c.id ? "bg-primary text-primary-foreground" : "bg-muted text-foreground hover:bg-accent"
+            )}
+          >
+            {c.icon} {c.name}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
+        {activeProducts.map((p: any) => (
+          <button
+            key={p.id}
+            onClick={() => onPick(p)}
+            disabled={!p.isAvailable}
+            className={cn(
+              "relative rounded-xl border p-3 text-left transition-all hover:border-primary hover:shadow-md",
+              !p.isAvailable && "opacity-40"
+            )}
+          >
+            {p.isBestseller && (
+              <span className="absolute right-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                Bestseller
+              </span>
+            )}
+            <div className="mb-1 flex items-center gap-1">
+              <span className={cn("h-3 w-3 rounded-sm border", p.isVeg ? "border-green-600" : "border-red-600")}>
+                <span className={cn("block h-1.5 w-1.5 rounded-full m-auto mt-0.5", p.isVeg ? "bg-green-600" : "bg-red-600")} />
+              </span>
+              <span className="text-[11px] text-muted-foreground">{p.code}</span>
+            </div>
+            <div className="text-sm font-semibold leading-tight">{p.name}</div>
+            {p.prepTimeMins && <div className="text-[11px] text-muted-foreground">~{p.prepTimeMins} min</div>}
+            <div className="mt-1 flex items-center justify-between">
+              <span className="font-bold">{formatCurrency(p.basePrice)}</span>
+              {p.addons.length > 0 && <Plus className="h-4 w-4 text-primary" />}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CartPanel({ lines, cartTotal, updateQty, removeItem, sending, onSend, orderCount }: any) {
+  return (
+    <div className="flex flex-col bg-muted/30">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <span className="font-semibold">Current order</span>
+        <span className="text-xs text-muted-foreground">{orderCount} order{orderCount !== 1 ? "s" : ""} so far</span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {lines.length === 0 && (
+          <div className="py-10 text-center text-sm text-muted-foreground">
+            No items yet. Tap a product to add.
+          </div>
+        )}
+        {lines.map((l: CartLine) => (
+          <div key={l.key} className="rounded-lg border bg-card p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{l.name}</div>
+                {l.addons.length > 0 && (
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {l.addons.map((a) => `${a.name} ×${a.quantity}`).join(", ")}
+                  </div>
+                )}
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {formatCurrency(l.unitPrice)}
+                  {l.addons.length > 0 && ` + ${formatCurrency(l.addons.reduce((s, a) => s + a.price * a.quantity, 0))}`}
+                </div>
+              </div>
+              <button onClick={() => removeItem(l.key)} className="text-muted-foreground hover:text-destructive">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <button onClick={() => updateQty(l.key, l.quantity - 1)} className="rounded-md border p-1"><Minus className="h-3.5 w-3.5" /></button>
+                <span className="w-6 text-center text-sm">{l.quantity}</span>
+                <button onClick={() => updateQty(l.key, l.quantity + 1)} className="rounded-md border p-1"><Plus className="h-3.5 w-3.5" /></button>
+              </div>
+              <span className="font-semibold">{formatCurrency((l.unitPrice + l.addons.reduce((s, a) => s + a.price * a.quantity, 0)) * l.quantity)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t p-4">
+        <div className="mb-2 flex items-center justify-between text-sm font-semibold">
+          <span>Subtotal</span>
+          <span>{formatCurrency(cartTotal)}</span>
+        </div>
+        <Button className="w-full" onClick={onSend} disabled={sending || lines.length === 0}>
+          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChefHat className="h-4 w-4" />}
+          Send to kitchen
+        </Button>
+      </div>
+    </div>
+  );
+}
