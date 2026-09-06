@@ -447,7 +447,7 @@ Zustand store shared by `TableTerminal` and `DiningMenu`:
 ## 13. Menu & Inventory Management
 
 - `MenuManager` (manager-only `/menu`) manages categories/products/add-ons against `GET/POST /api/menu/categories` and `/api/products` + `/api/products/<id>` (PATCH supports `addonIds` replace — deletes then recreates `ProductAddon` rows). **`/api/products` intentionally has no GET handler** → a bare `GET /api/products` returns **405**; that is by design, not a bug.
-- Add-ons are global `AddonOptions`; linking them to a product creates `ProductAddon`.
+- Add-ons are global `AddonOptions` managed via `GET/POST /api/addons` + `PATCH/DELETE /api/addons/:id` (delete is 409-guarded once referenced by past `order_item_addons`). They can be attached at **two levels**: per-product (`ProductAddon`, via product PATCH `addonIds`) and per-category (`CategoryAddon`, via the category PATCH `addonIds`). The **effective** add-ons a guest/server picker shows for a product are `mergeProductAddons()` (`src/lib/addons.ts`): product links first, then inherited category links, deduped by addon id (product-level wins). `/tables`, `/m`, and kitchen/order flows all consume the merged set; `MenuManager` shows inherited add-ons as `(cat)` chips and the category edit dialog assigns category add-ons.
 - `InventoryManager` (manager-only `/inventory`) manages `GET/POST /api/stock` (ingredients, stock movements), plus suppliers via related routes. Order placement does **not** auto-consume stock — but defect-food cancellations and manual `/waste` records **do** write ingredients off as `WASTAGE` movements (§9.6).
 - `SettingsManager` (SUPER_ADMIN/ADMIN) edits `/api/settings` (key/value, e.g. `service_charge_percent`, `loyalty_points_per_rupee`). `TaxRates` editable via `/api/tax-rates`.
 
@@ -470,6 +470,10 @@ Conventions: helpers from `@/lib/api` (`apiAuth`), `@/lib/utils` (`jsonError`, `
 | GET | `/api/products` | — | **No handler (405 by design)** |
 | POST | `/api/products` | manager | Create product |
 | PATCH/DELETE | `/api/products/:id` | manager | Update product (incl. `addonIds` replace) / delete |
+| GET | `/api/addons` | manager | List all add-ons (usage counts: `_count.products` + `_count.categoryAddons`) |
+| POST | `/api/addons` | manager | Create add-on `{ name, flavour?, price=0, isActive? }` |
+| PATCH/DELETE | `/api/addons/:id` | manager | Update name/flavour/price/isActive / delete (409 once used by past `order_item_addons`) |
+| PATCH/DELETE | `/api/menu/categories/:id` | manager | Update name/icon/isActive + `addonIds` replace / delete (409 while products exist) |
 | GET | `/api/staff` | manager | List staff (id/name/email/role/isActive) |
 | POST | `/api/staff` | manager | Add staff (bcrypt password + generated 4-digit PIN) |
 | GET | `/api/customers` | staff | Customer list |
