@@ -15,6 +15,27 @@ export async function POST(req: Request) {
   }
 
   try {
+    const addonIdsArr: string[] = Array.from(new Set(Array.isArray(addonIds) ? addonIds : []));
+    if (addonIdsArr.length) {
+      const rows = await prisma.addonOption.findMany({
+        where: { id: { in: addonIdsArr } },
+        select: { id: true, name: true, categoryId: true, category: { select: { name: true } } },
+      });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const missing = addonIdsArr.filter((aid) => !byId.has(aid));
+      const wrongCat = rows.filter((r) => r.categoryId && r.categoryId !== categoryId);
+      if (missing.length) {
+        return Response.json({ error: "Unknown add-on(s) selected" }, { status: 400 });
+      }
+      if (wrongCat.length) {
+        const c = await prisma.menuCategory.findUnique({ where: { id: categoryId }, select: { name: true } });
+        return Response.json(
+          { error: `Add-on(s) "${wrongCat.map((a) => a.name).join(", ")}" belong to another category and can't be attached to "${c?.name ?? "this product"}"` },
+          { status: 400 }
+        );
+      }
+    }
+
     const product = await prisma.product.create({
       data: {
         name,
@@ -29,8 +50,8 @@ export async function POST(req: Request) {
         isAvailable: isAvailable ?? true,
         prepTimeMins: prepTimeMins ? Number(prepTimeMins) : null,
         maxOrderQty: maxOrderQty ? Number(maxOrderQty) : null,
-        addons: addonIds?.length
-          ? { create: (addonIds as string[]).map((addonId, i) => ({ addonId, sortOrder: i })) }
+        addons: addonIdsArr.length
+          ? { create: addonIdsArr.map((addonId, i) => ({ addonId, sortOrder: i })) }
           : undefined,
       },
     });

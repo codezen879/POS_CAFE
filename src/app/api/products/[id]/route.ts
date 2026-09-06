@@ -28,9 +28,31 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   // handle addon relation replacement
   if (body.addonIds !== undefined) {
+    const addonIdsArr: string[] = Array.from(new Set(Array.isArray(body.addonIds) ? body.addonIds : []));
+    const targetCat =
+      data.categoryId !== undefined
+        ? data.categoryId
+        : (await prisma.product.findUnique({ where: { id }, select: { categoryId: true } }))?.categoryId ?? null;
+    if (addonIdsArr.length) {
+      const rows = await prisma.addonOption.findMany({
+        where: { id: { in: addonIdsArr } },
+        select: { id: true, name: true, categoryId: true, category: { select: { name: true } } },
+      });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const missing = addonIdsArr.filter((aid) => !byId.has(aid));
+      const wrongCat = rows.filter((r) => r.categoryId && r.categoryId !== targetCat);
+      if (missing.length) return Response.json({ error: "Unknown add-on(s) selected" }, { status: 400 });
+      if (wrongCat.length) {
+        const c = targetCat ? await prisma.menuCategory.findUnique({ where: { id: targetCat }, select: { name: true } }) : null;
+        return Response.json(
+          { error: `Add-on(s) "${wrongCat.map((a) => a.name).join(", ")}" belong to another category and can't be attached to "${c?.name ?? "this product"}"` },
+          { status: 400 }
+        );
+      }
+    }
     await prisma.productAddon.deleteMany({ where: { productId: id } });
     await prisma.productAddon.createMany({
-      data: (body.addonIds as string[]).map((addonId, i) => ({ productId: id, addonId, sortOrder: i })),
+      data: addonIdsArr.map((addonId, i) => ({ productId: id, addonId, sortOrder: i })),
     });
   }
 

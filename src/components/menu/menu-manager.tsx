@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Pencil, Trash2, Sparkles, Save, X, Loader2 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -521,6 +521,16 @@ function ProductDialog({ mode, product, categories, taxRates, allAddons, onClose
   const activeCategory = categories.find((c: any) => c.id === categoryId);
   const inheritedAddons = (activeCategory?.addons ?? []).filter((a: any) => a.isActive);
   const inheritedIds = inheritedAddons.map((a: any) => a.id);
+  const attachableAddons = (allAddons ?? []).filter((a: any) => !a.categoryId || a.categoryId === categoryId);
+
+  useEffect(() => {
+    setSelectedAddons((prev) =>
+      prev.filter((aid: string) => {
+        const a = allAddons.find((x: any) => x.id === aid);
+        return !a?.categoryId || a.categoryId === categoryId;
+      })
+    );
+  }, [categoryId, allAddons]);
 
   function toggleAddon(id: string) {
     setSelectedAddons((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -589,9 +599,10 @@ function ProductDialog({ mode, product, categories, taxRates, allAddons, onClose
             <Label>Add-ons for this product</Label>
             <p className="text-xs text-muted-foreground">
               These are added to the product&apos;s category add-ons ({inheritedAddons.length} inherited from &quot;{(activeCategory as any)?.name ?? ""}&quot;).
+              Add-ons owned by other categories aren&apos;t shown here.
             </p>
             <div className="flex flex-wrap gap-2">
-              {allAddons.map((a: any) => {
+              {attachableAddons.map((a: any) => {
                 const fromCategory = inheritedIds.includes(a.id);
                 return (
                   <button
