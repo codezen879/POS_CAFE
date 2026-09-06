@@ -22,10 +22,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     data.price = value;
   }
   if (isActive !== undefined) data.isActive = !!isActive;
+  if (body.categoryId !== undefined) {
+    const categoryId = body.categoryId || null;
+    if (categoryId) {
+      const cat = await prisma.menuCategory.findUnique({ where: { id: categoryId }, select: { id: true } });
+      if (!cat) return jsonError("Category not found", 400);
+    }
+    data.categoryId = categoryId;
+  }
 
   const addon = await prisma.addonOption.update({
     where: { id },
     data,
+    include: { category: { select: { id: true, name: true } } },
   }).catch(() => null);
   if (!addon) return jsonError("Add-on not found", 404);
   return Response.json({ addon });

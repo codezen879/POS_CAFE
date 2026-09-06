@@ -13,12 +13,12 @@ const [categories, taxRates, addons, store] = await Promise.all([
     prisma.menuCategory.findMany({
       orderBy: { sortOrder: "asc" },
       include: {
-        addons: { include: { addon: true } },
+        addons: { where: { isActive: true }, orderBy: { name: "asc" } },
         products: { orderBy: { sortOrder: "asc" }, include: { taxRate: true, addons: { include: { addon: true } } } },
       },
     }),
     prisma.taxRate.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
-    prisma.addonOption.findMany({ orderBy: { name: "asc" } }),
+    prisma.addonOption.findMany({ orderBy: { name: "asc" }, include: { category: { select: { id: true, name: true } } } }),
     prisma.store.findFirst(),
   ]);
 

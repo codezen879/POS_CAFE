@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { generateReference, jsonError } from "@/lib/utils";
+import { mergeProductAddons } from "@/lib/addons";
 
 type ItemPayload = {
   productId: string;
@@ -33,7 +34,7 @@ export async function POST(req: Request) {
     // cannot tamper with names or prices.
     const products = await prisma.product.findMany({
       where: { id: { in: items.map((i) => i.productId).filter(Boolean) } },
-      include: { addons: { include: { addon: true } } },
+      include: { addons: { include: { addon: true } }, category: { include: { addons: { where: { isActive: true } } } } },
     });
     const productById = new Map(products.map((p) => [p.id, p]));
 
@@ -49,9 +50,7 @@ export async function POST(req: Request) {
           create: items.map((it) => {
             const product = it.productId ? productById.get(it.productId) : undefined;
             if (!product) throw new Error("Unknown product");
-            const addonById = new Map(
-              product.addons.filter((a) => a.addon.isActive).map((a) => [a.addonId, a.addon])
-            );
+            const addonById = new Map(mergeProductAddons(product as any).map((l) => [l.addon.id, l.addon]));
             const addons = (it.addons ?? [])
               .filter((a) => a && a.id && addonById.has(a.id))
               .slice(0, MAX_ADDONS)

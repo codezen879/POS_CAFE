@@ -23,7 +23,7 @@ export default async function PublicMenuPage({
           orderBy: { sortOrder: "asc" },
           include: {
             addons: { include: { addon: true } },
-            category: { include: { addons: { include: { addon: true } } } },
+            category: { include: { addons: { where: { isActive: true }, orderBy: { name: "asc" } } } },
           },
         },
       },

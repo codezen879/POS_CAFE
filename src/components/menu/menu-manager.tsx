@@ -75,7 +75,7 @@ export function MenuManager({ categories, taxRates, addons, isManager }: any) {
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {activeProducts.map((p: any) => {
-          const inherited = (activeCategory?.addons ?? []).filter((a: any) => a.addon?.isActive);
+          const inherited = (activeCategory?.addons ?? []).filter((a: any) => a.isActive);
           return (
             <div key={p.id} className="rounded-xl border p-4">
               <div className="mb-2 flex items-start justify-between gap-2">
@@ -121,10 +121,10 @@ export function MenuManager({ categories, taxRates, addons, isManager }: any) {
                     </span>
                   ))}
                   {inherited
-                    .filter((ca: any) => !p.addons.some((pa: any) => pa.addonId === ca.addonId))
-                    .map((ca: any) => (
-                      <span key={ca.addonId} className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground" title="From category">
-                        {ca.addon.name} · cat
+                    .filter((ad: any) => !p.addons.some((pa: any) => pa.addonId === ad.id))
+                    .map((ad: any) => (
+                      <span key={ad.id} className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground" title="From category">
+                        {ad.name} · cat
                       </span>
                     ))}
                 </div>
@@ -158,6 +158,7 @@ export function MenuManager({ categories, taxRates, addons, isManager }: any) {
       {addonsOpen && (
         <AddonsDialog
           allAddons={addons}
+          categories={categories}
           onClose={() => setAddonsOpen(false)}
           onSaved={() => { refresh(); }}
         />
@@ -214,7 +215,7 @@ function CategoryDialog({ category, allAddons, onClose, onSaved }: any) {
   const [name, setName] = useState(category.name);
   const [icon, setIcon] = useState(category.icon ?? "");
   const [isActive, setIsActive] = useState(category.isActive);
-  const [selected, setSelected] = useState<string[]>(category.addons?.map((a: any) => a.addonId) ?? []);
+  const [selected, setSelected] = useState<string[]>(category.addons?.map((a: any) => a.id) ?? []);
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -266,7 +267,8 @@ function CategoryDialog({ category, allAddons, onClose, onSaved }: any) {
           <div className="space-y-1">
             <Label>Add-ons for this category</Label>
             <p className="text-xs text-muted-foreground">
-              Chosen add-ons are offered on every product in this category. You can still add extras per product.
+              Each add-on belongs to one category only. Chosen add-ons are offered on every product in this
+              category — checking an add-on that lives in another category moves it here.
             </p>
             <div className="flex flex-wrap gap-2">
               {allAddons.map((a: any) => (
@@ -280,6 +282,7 @@ function CategoryDialog({ category, allAddons, onClose, onSaved }: any) {
                   )}
                 >
                   {a.name} · {formatCurrency(a.price)}
+                  {a.category ? <span className="ml-1 opacity-60">{a.category.name}</span> : <span className="ml-1 opacity-40">unassigned</span>}
                 </button>
               ))}
             </div>
@@ -301,13 +304,14 @@ function CategoryDialog({ category, allAddons, onClose, onSaved }: any) {
   );
 }
 
-function AddonsDialog({ allAddons, onClose, onSaved }: any) {
+function AddonsDialog({ allAddons, categories, onClose, onSaved }: any) {
   const [newName, setNewName] = useState("");
   const [newFlavour, setNewFlavour] = useState("");
   const [newPrice, setNewPrice] = useState("");
+  const [newCategoryId, setNewCategoryId] = useState("");
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [edit, setEdit] = useState<{ name: string; flavour: string; price: string; isActive: boolean }>({ name: "", flavour: "", price: "", isActive: true });
+  const [edit, setEdit] = useState<{ name: string; flavour: string; price: string; isActive: boolean; categoryId: string }>({ name: "", flavour: "", price: "", isActive: true, categoryId: "" });
   const [savingId, setSavingId] = useState<string | null>(null);
 
   async function create() {
@@ -317,11 +321,11 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
       const res = await fetch("/api/addons", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName, flavour: newFlavour || undefined, price: Number(newPrice) || 0 }),
+        body: JSON.stringify({ name: newName, flavour: newFlavour || undefined, price: Number(newPrice) || 0, categoryId: newCategoryId || null }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
-      toast.success("Add-on created");
+      toast.success(newCategoryId ? "Add-on added to category" : "Add-on created");
       setNewName(""); setNewFlavour(""); setNewPrice("");
       onSaved();
     } catch (e: any) { toast.error(e.message); } finally { setCreating(false); }
@@ -329,7 +333,7 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
 
   function beginEdit(a: any) {
     setEditingId(a.id);
-    setEdit({ name: a.name, flavour: a.flavour ?? "", price: String(a.price ?? ""), isActive: a.isActive });
+    setEdit({ name: a.name, flavour: a.flavour ?? "", price: String(a.price ?? ""), isActive: a.isActive, categoryId: a.category?.id ?? "" });
   }
 
   async function update() {
@@ -340,7 +344,7 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
       const res = await fetch(`/api/addons/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: edit.name, flavour: edit.flavour || undefined, price: Number(edit.price) || 0, isActive: edit.isActive }),
+        body: JSON.stringify({ name: edit.name, flavour: edit.flavour || undefined, price: Number(edit.price) || 0, isActive: edit.isActive, categoryId: edit.categoryId === "__none__" ? null : edit.categoryId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
@@ -375,7 +379,7 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
               <span key={a.id} className={cn("rounded-full border px-2.5 py-1 text-xs", !a.isActive && "opacity-40")}>
                 {a.name} · {formatCurrency(a.price)}
                 {a._count?.products > 0 && <span className="ml-1 text-muted-foreground">P{a._count.products}</span>}
-                {a._count?.categoryAddons > 0 && <span className="ml-1 text-muted-foreground">C{a._count.categoryAddons}</span>}
+                {a.category ? <span className="ml-1 text-muted-foreground">{a.category.name}</span> : <span className="ml-1 text-muted-foreground/60">unassigned</span>}
                 {!a.isActive && <span className="ml-1 text-destructive">off</span>}
               </span>
             ))}
@@ -396,6 +400,17 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
             <div className="space-y-1">
               <Label>Price</Label>
               <Input type="number" min={0} value={newPrice} onChange={(e) => setNewPrice(e.target.value)} className="w-24" />
+            </div>
+            <div className="space-y-1">
+              <Label>Category</Label>
+              <Select value={newCategoryId} onValueChange={setNewCategoryId}>
+                <SelectTrigger className="w-40"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                <SelectContent>
+                  {categories.map((c: any) => (
+                    <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <Button onClick={create} disabled={creating || !newName.trim()}>
               {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add
@@ -420,6 +435,18 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
                     <Label>Price</Label>
                     <Input type="number" min={0} value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value })} className="w-24" />
                   </div>
+                  <div className="space-y-1">
+                    <Label>Category</Label>
+                    <Select value={edit.categoryId} onValueChange={(v) => setEdit({ ...edit, categoryId: v })}>
+                      <SelectTrigger className="w-40"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassigned</SelectItem>
+                        {categories.map((c: any) => (
+                          <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="flex items-center gap-2 pb-1">
                     <Switch checked={edit.isActive} onCheckedChange={(v) => setEdit({ ...edit, isActive: !!v })} />
                     <span className="text-xs text-muted-foreground">Active</span>
@@ -441,9 +468,11 @@ function AddonsDialog({ allAddons, onClose, onSaved }: any) {
                   {a.flavour && <span className="ml-2 text-xs text-muted-foreground">{a.flavour}</span>}
                   <span className="ml-2 text-xs">{formatCurrency(a.price)}</span>
                   {!a.isActive && <Badge variant="outline" className="ml-2">inactive</Badge>}
-                  {(a._count?.products > 0 || a._count?.categoryAddons > 0) && (
+                  {a.category && <span className="ml-2 text-[11px] text-muted-foreground">in {a.category.name}</span>}
+                  {!a.category && <span className="ml-2 text-[11px] text-muted-foreground/60">unassigned</span>}
+                  {a._count?.products > 0 && (
                     <span className="ml-2 text-[11px] text-muted-foreground">
-                      {a._count.products} product{a._count.products === 1 ? "" : "s"} · {a._count.categoryAddons} categor{a._count.categoryAddons === 1 ? "y" : "ies"}
+                      on {a._count.products} product{a._count.products === 1 ? "" : "s"}
                     </span>
                   )}
                 </div>
@@ -490,9 +519,7 @@ function ProductDialog({ mode, product, categories, taxRates, allAddons, onClose
   const [loading, setLoading] = useState(false);
 
   const activeCategory = categories.find((c: any) => c.id === categoryId);
-  const inheritedAddons = (activeCategory?.addons ?? [])
-    .filter((a: any) => a.addon?.isActive)
-    .map((a: any) => a.addon);
+  const inheritedAddons = (activeCategory?.addons ?? []).filter((a: any) => a.isActive);
   const inheritedIds = inheritedAddons.map((a: any) => a.id);
 
   function toggleAddon(id: string) {

@@ -40,7 +40,7 @@ export default async function TablesPage() {
           include: {
             taxRate: true,
             addons: { include: { addon: true } },
-            category: { include: { addons: { include: { addon: true } } } },
+            category: { include: { addons: { where: { isActive: true }, orderBy: { name: "asc" } } } },
           },
         },
       },

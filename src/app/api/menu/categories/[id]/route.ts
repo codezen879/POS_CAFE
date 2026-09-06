@@ -21,18 +21,32 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (icon !== undefined) data.icon = icon || null;
   if (isActive !== undefined) data.isActive = !!isActive;
 
-  // replace category add-ons wholesale (mirrors the product route)
+  // Each add-on belongs to exactly ONE category (parent → child), so assigning
+  // addonIds = re-parenting those add-ons here; any add-ons currently owned by
+  // this category but NOT in the list are unlinked (parent → null).
   if (body.addonIds !== undefined) {
-    await prisma.categoryAddon.deleteMany({ where: { categoryId: id } });
-    await prisma.categoryAddon.createMany({
-      data: (body.addonIds as string[]).map((addonId, i) => ({ categoryId: id, addonId, sortOrder: i })),
-    });
+    const addonIds = Array.isArray(body.addonIds) ? (body.addonIds as string[]).filter(Boolean) : [];
+    const want = new Set(addonIds);
+    const current = await prisma.addonOption.findMany({ where: { categoryId: id }, select: { id: true } });
+    const toDetach = current.filter((a) => !want.has(a.id)).map((a) => a.id);
+    if (want.size > 0) {
+      await prisma.addonOption.updateMany({
+        where: { id: { in: addonIds } },
+        data: { categoryId: id },
+      });
+    }
+    if (toDetach.length > 0) {
+      await prisma.addonOption.updateMany({
+        where: { id: { in: toDetach } },
+        data: { categoryId: null },
+      });
+    }
   }
 
   const updated = await prisma.menuCategory.update({
     where: { id },
     data,
-    include: { addons: { include: { addon: true } } },
+    include: { addons: { where: { isActive: true }, orderBy: { name: "asc" } } },
   });
   return Response.json({ category: updated });
 }
