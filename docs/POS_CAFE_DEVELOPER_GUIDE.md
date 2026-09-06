@@ -323,7 +323,8 @@ Client form with a PIN/Password toggle; calls `signIn("credentials", { redirect:
    - Cart panel (zustand `useCart`): line items with add-on lines, qty steppers, remove; **Send to kitchen** → `POST /api/pos/sessions/<id>/order` (staff-authorized), then `toast.success("Order sent to kitchen")`, clears cart, refreshes.
    - **Bill** tab → `BillView` (§9.4).
 4. **Live order management (Placed orders)** — a panel below the cart lists every active order for the table with `orderNumber`, live status badge, and `timeAgo(placedAt)`:
-   - **Editable while `DRAFT` / `SENT_TO_KITCHEN` / `PREPARING`** (`EDITABLE_STATUSES` in `table-terminal.tsx`): qty steppers (`PATCH`), per-item remove (`DELETE`), and a **Cancel** button (confirm via `window.confirm`, reuses `PATCH /api/pos/orders/<id>`). Edits lock once `READY`, showing "This order can no longer be edited."
+   - **Editable while `DRAFT` / `SENT_TO_KITCHEN` / `PREPARING`** (`EDITABLE_STATUSES` in `table-terminal.tsx`): qty steppers (`PATCH`), per-item remove (`DELETE`), and a **Cancel** button. Edits lock once `READY`, showing "This order can no longer be edited."
+   - **Cancellation is reason-gated** (see §9.6): the Cancel button (`CANCELLABLE_STATUSES` = `DRAFT/SENT_TO_KITCHEN/PREPARING/READY`) opens a nested dialog instead of `window.confirm`. For `PREPARING`/`READY` orders the **only** reason offered is **"Food defect / damaged"** — confirming calls `PATCH /api/pos/orders/<id>` `{ status: "CANCELLED", reason, note }`, which auto-records a `WasteRecord` at cost price and writes off recipe ingredients (§9.6).
    - **Item API** lives in `src/app/api/pos/orders/[id]/items/[itemId]/route.ts`: `PATCH { quantity }` clamps 0–99 and rejects non-editable statuses with 409; `DELETE` removes the item and **auto-cancels the order when the last item is removed**.
    - TableGrid keeps the open terminal live: a `useEffect` re-syncs `terminalTable` from the refreshed `tables` prop, so send/edit/cancel/bill updates appear without reopening the table. It **only swaps when the refreshed table still has an open session** — if a settled table briefly refreshes with `sessions: []` it keeps the current terminal rather than blanking the popup (§9.4).
 
@@ -367,6 +368,18 @@ total        = taxableBase + taxTotal + serviceCharge
 ```
 
 All steps `round2` (×100/100). Excludes orders with status `CANCELLED` or `DRAFT`. **When you change pricing logic, change this file — never inline the math in route handlers.**
+
+### 9.6 Waste & trash management (`/waste` → `WasteList`)
+
+Tracks inventory used with **no revenue** — defective returns, cancels, spillage, expiry — valued at **cost price**, and writes those ingredients off from stock automatically.
+
+- **Cancel policy** (`src/app/api/pos/orders/[id]/route.ts`): a `CANCELLED` patch requires a reason once prep has started.
+  - `DRAFT` / `SENT_TO_KITCHEN` → free cancel, any of `DEFECTIVE_FOOD` / `NOT_STARTED` / `OTHER` (no waste).
+  - `PREPARING` / `READY` → `DEFECTIVE_FOOD` **only**; any other reason → **409** ("the guest must pay"). This is why the Table Service dialog offers a single defect option once the kitchen started (§9.2.4).
+  - `PARTIALLY_SERVED` / `SERVED` → must be billed and paid; cancelled orders are final, `SERVED` is final.
+- **Auto-waste**: `recordWasteFromOrder()` wraps the cancel in a `$transaction` — creates a `WasteRecord` (`source ORDER_CANCEL`, `reason DEFECTIVE_FOOD`, captures `tableName` + `note`), snapshots each `OrderItem` into a `WasteItem` at `Product.costPrice` (fallback `unitPrice`), totals `totalCost`, then for every recipe ingredient (`order item → product.recipe`) creates a `WASTAGE` `StockMovement` (`qty = qtyUsed × item.quantity`, clamped to available) and **decrements `Ingredient.stockQty`** by the same value so stock reflects what was thrown away.
+- **Manual records** (`src/app/api/waste/route.ts`): `GET` lists records (filters `reason` / `source` / `from` / `to` / `limit`, includes items + movements + `recordedBy` + order); `POST` (manager+) creates a record for any `WasteReason` with free-form wasted items + ingredient deductions. `POST /api/waste/:id/ingredients` (manager+) adds more ingredient write-offs to an existing record.
+- Schema: `WasteRecord` ↔ `{items: WasteItem[], movements: StockMovement[]}`, `StockMovement.wasteRecordId` links each write-off back to its record; `enum WasteReason { DEFECTIVE_FOOD, NOT_STARTED, SPILLAGE, EXPIRED, OTHER }`. `WasteList` shows today/total value + units written off, and gates the manual dialogs to `SUPER_ADMIN/ADMIN/MANAGER`.
 
 ---
 
@@ -435,7 +448,7 @@ Zustand store shared by `TableTerminal` and `DiningMenu`:
 
 - `MenuManager` (manager-only `/menu`) manages categories/products/add-ons against `GET/POST /api/menu/categories` and `/api/products` + `/api/products/<id>` (PATCH supports `addonIds` replace — deletes then recreates `ProductAddon` rows). **`/api/products` intentionally has no GET handler** → a bare `GET /api/products` returns **405**; that is by design, not a bug.
 - Add-ons are global `AddonOptions`; linking them to a product creates `ProductAddon`.
-- `InventoryManager` (manager-only `/inventory`) manages `GET/POST /api/stock` (ingredients, stock movements), plus suppliers via related routes. There is **no automated stock deduction** on order placement yet — ingredients are adjusted manually.
+- `InventoryManager` (manager-only `/inventory`) manages `GET/POST /api/stock` (ingredients, stock movements), plus suppliers via related routes. Order placement does **not** auto-consume stock — but defect-food cancellations and manual `/waste` records **do** write ingredients off as `WASTAGE` movements (§9.6).
 - `SettingsManager` (SUPER_ADMIN/ADMIN) edits `/api/settings` (key/value, e.g. `service_charge_percent`, `loyalty_points_per_rupee`). `TaxRates` editable via `/api/tax-rates`.
 
 ---
@@ -471,12 +484,15 @@ Conventions: helpers from `@/lib/api` (`apiAuth`), `@/lib/utils` (`jsonError`, `
 | GET | `/api/pos/sessions/:id/bill-detailed` | staff | Bill detail + payments + taxLines + session tree |
 | POST | `/api/pos/sessions/:id/bill` | staff | Generate/refresh bill (upsert on `sessionId`) |
 | GET | `/api/pos/kitchen/orders` | staff | KDS feed (4 active statuses) |
-| PATCH | `/api/pos/orders/:id` | staff | Advance status; stamps lifecycle timestamps |
+| PATCH | `/api/pos/orders/:id` | staff | Advance status; stamps lifecycle timestamps; **CANCELLED is reason-gated** (defect-only once PREPARING/READY, else 409) and auto-records waste (`.waste` in response) |
 | PATCH | `/api/pos/orders/:id/items/:itemId` | staff | Update item qty (clamped 1–99); 409 unless DRAFT/SENT_TO_KITCHEN/PREPARING |
 | DELETE | `/api/pos/orders/:id/items/:itemId` | staff | Remove item; removing the last item cancels the order |
 | POST | `/api/pos/bills/:id/pay` | staff | Record payment; settles → closes session + frees table + loyalty |
 | GET | `/api/bills/:id` | staff | Full bill detail (payments, taxLines, session/table/customer/orders) for View dialogs |
 | PATCH | `/api/bills/:id` | manager | Cancel unpaid bill → `VOID` (409 if PAID/VOID/REFUNDED); session stays open |
+| GET | `/api/waste` | staff | Waste ledger (filters `reason`/`source`/`from`/`to`/`limit`; items + movements + recordedBy + order) |
+| POST | `/api/waste` | manager | Manual waste record (items + ingredient write-offs) |
+| POST | `/api/waste/:id/ingredients` | manager | Add ingredient `WASTAGE` write-off to an existing record |
 | **GET** | **`/api/m/tables`** | **public** | Open tables for guest checkout |
 | **POST** | **`/api/m/orders`** | **public** | Guest order (tamper-safe, §10.3) |
 
