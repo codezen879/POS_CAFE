@@ -53,6 +53,9 @@ export function TableTerminal({
   const [sending, setSending] = useState(false);
   const [loadingBill, setLoadingBill] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState<string>("");
+  const [cancelNote, setCancelNote] = useState<string>("");
 
   const { lines, addItem, removeItem, updateQty, clearCart, setOrderId } = useCart();
 
@@ -138,9 +141,14 @@ export function TableTerminal({
   }
 
   const EDITABLE_STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "PREPARING"];
+  const CANCELLABLE_STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "PREPARING", "READY"];
 
   function isEditable(status: string) {
     return EDITABLE_STATUSES.includes(status);
+  }
+
+  function isCancellable(status: string) {
+    return CANCELLABLE_STATUSES.includes(status);
   }
 
   async function updateOrderItemQty(orderId: string, itemId: string, quantity: number) {
@@ -178,24 +186,35 @@ export function TableTerminal({
     }
   }
 
-  async function cancelOrder(orderId: string) {
-    if (!window.confirm("Cancel this entire order? This cannot be undone.")) return;
+  async function confirmCancelOrder(orderId: string) {
     setBusy(orderId);
     try {
       const res = await fetch(`/api/pos/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "CANCELLED" }),
+        body: JSON.stringify({ status: "CANCELLED", reason: cancelReason, note: cancelNote || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to cancel order");
-      toast.success("Order cancelled");
+      const waste = data.waste;
+      toast.success(
+        waste ? `Order cancelled · waste logged (${formatCurrency(waste.totalCost)})` : "Order cancelled"
+      );
+      setCancelTarget(null);
+      setCancelReason("");
+      setCancelNote("");
       onChanged();
     } catch (e: any) {
       toast.error(e.message);
     } finally {
       setBusy(null);
     }
+  }
+
+  function openCancelDialog(orderId: string) {
+    setCancelReason("");
+    setCancelNote("");
+    setCancelTarget(orderId);
   }
 
   return (
@@ -254,9 +273,10 @@ export function TableTerminal({
                 orders={sessionOrders}
                 busy={busy}
                 isEditable={isEditable}
+                isCancellable={isCancellable}
                 onUpdateQty={(orderId: string, itemId: string, quantity: number) => updateOrderItemQty(orderId, itemId, quantity)}
                 onRemoveItem={(orderId: string, itemId: string) => removeOrderItem(orderId, itemId)}
-                onCancel={cancelOrder}
+                onCancel={openCancelDialog}
               />
             </div>
           ) : (
@@ -308,6 +328,70 @@ export function TableTerminal({
           </div>
         )}
       </DialogContent>
+
+      <Dialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel order</DialogTitle>
+          </DialogHeader>
+          {(() => {
+            const target = sessionOrders.find((o: any) => o.id === cancelTarget);
+            if (!target) return null;
+            const prepStarted = ["PREPARING", "READY"].includes(target.status);
+            const allowedReasons: { value: string; label: string }[] = prepStarted
+              ? [{ value: "DEFECTIVE_FOOD", label: "Food defect / damaged — dish returned" }]
+              : [
+                  { value: "DEFECTIVE_FOOD", label: "Food defect / damaged — dish returned" },
+                  { value: "NOT_STARTED", label: "Kitchen hasn't started — no food was made" },
+                  { value: "OTHER", label: "Other (guest no longer wants it)" },
+                ];
+            return (
+              <div className="space-y-4">
+                {prepStarted && (
+                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    This order is already being {target.status === "READY" ? "prepared" : "prepared"}. Unless the food is
+                    defective, the guest has to pay.
+                  </p>
+                )}
+                <div className="space-y-2">
+                  {allowedReasons.map((r) => (
+                    <label
+                      key={r.value}
+                      className={cn(
+                        "flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm",
+                        cancelReason === r.value ? "border-primary bg-primary/5" : "hover:bg-muted"
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="cancel-reason"
+                        value={r.value}
+                        checked={cancelReason === r.value}
+                        onChange={() => setCancelReason(r.value)}
+                        className="mt-0.5"
+                      />
+                      <span>{r.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <Input
+                  placeholder="Note (optional)"
+                  value={cancelNote}
+                  onChange={(e) => setCancelNote(e.target.value)}
+                />
+                <Button
+                  className="w-full"
+                  disabled={!cancelReason || busy === target.id}
+                  onClick={() => confirmCancelOrder(target.id)}
+                >
+                  {busy === target.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                  Cancel order
+                </Button>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
@@ -431,7 +515,7 @@ const ORDER_STATUS_STYLE: Record<string, string> = {
   CANCELLED: "bg-red-100 text-red-600",
 };
 
-function PlacedOrders({ orders, busy, isEditable, onUpdateQty, onRemoveItem, onCancel }: any) {
+function PlacedOrders({ orders, busy, isEditable, isCancellable, onUpdateQty, onRemoveItem, onCancel }: any) {
   if (orders.length === 0) {
     return (
       <div className="border-t px-5 py-4">
@@ -469,7 +553,7 @@ function PlacedOrders({ orders, busy, isEditable, onUpdateQty, onRemoveItem, onC
                   </span>
                   {o.placedAt && <span className="text-xs text-muted-foreground">{timeAgo(o.placedAt)}</span>}
                 </div>
-                {editable && (
+                {isCancellable(o.status) && (
                   <button
                     onClick={() => onCancel(o.id)}
                     disabled={busy === o.id}

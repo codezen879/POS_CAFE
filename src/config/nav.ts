@@ -9,6 +9,7 @@ import {
   UsersRound,
   BarChart3,
   Settings,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -38,6 +39,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { title: "Orders", href: "/orders", icon: ReceiptText },
       { title: "Billing", href: "/billing", icon: ReceiptText },
+      { title: "Waste", href: "/waste", icon: Trash2 },
       { title: "Customers & Loyalty", href: "/customers", icon: Users },
       { title: "Inventory", href: "/inventory", icon: Boxes, roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"] },
     ],
