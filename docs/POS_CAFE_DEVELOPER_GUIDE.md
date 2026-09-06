@@ -325,7 +325,7 @@ Client form with a PIN/Password toggle; calls `signIn("credentials", { redirect:
 4. **Live order management (Placed orders)** — a panel below the cart lists every active order for the table with `orderNumber`, live status badge, and `timeAgo(placedAt)`:
    - **Editable while `DRAFT` / `SENT_TO_KITCHEN` / `PREPARING`** (`EDITABLE_STATUSES` in `table-terminal.tsx`): qty steppers (`PATCH`), per-item remove (`DELETE`), and a **Cancel** button (confirm via `window.confirm`, reuses `PATCH /api/pos/orders/<id>`). Edits lock once `READY`, showing "This order can no longer be edited."
    - **Item API** lives in `src/app/api/pos/orders/[id]/items/[itemId]/route.ts`: `PATCH { quantity }` clamps 0–99 and rejects non-editable statuses with 409; `DELETE` removes the item and **auto-cancels the order when the last item is removed**.
-   - TableGrid keeps the open terminal live: a `useEffect` re-syncs `terminalTable` from the refreshed `tables` prop, so send/edit/cancel/bill updates appear without reopening the table.
+   - TableGrid keeps the open terminal live: a `useEffect` re-syncs `terminalTable` from the refreshed `tables` prop, so send/edit/cancel/bill updates appear without reopening the table. It **only swaps when the refreshed table still has an open session** — if a settled table briefly refreshes with `sessions: []` it keeps the current terminal rather than blanking the popup (§9.4).
 
 ### 9.3 Kitchen Display (`/kitchen` → `KitchenBoard`)
 
@@ -340,7 +340,14 @@ Client form with a PIN/Password toggle; calls `signIn("credentials", { redirect:
    - Creates a `Payment` (amount, method, receivedById).
    - Updates `paidAmount`/`dueAmount`; `isPaid` when `paidAmount >= total - 0.01` → status `PAID` else `PARTIALLY_PAID`.
    - **On full settlement inside a `$transaction`:** closes the session (`CLOSED`, `closedAt`), frees the table (`AVAILABLE`), and if a customer is attached, awards loyalty points (`loyalty_points_per_rupee` Setting, `Math.floor(total)`) + inserts an EARN `LoyaltyTransaction`.
-4. Settled bill → `Receipt`: printable 80 mm receipt (`#receipt-print` visibility trick under `@media print`), plus "This table left a review?" star dialog (`POST /api/reviews`).
+4. Settled bill → `Receipt`: printable 80 mm receipt, plus "This table left a review?" star dialog (`POST /api/reviews`). Printing is **not** `window.print()` inside the dialog — `receipt.tsx` exposes `printReceipt(bill, store)` which renders the same escaped HTML (`buildReceiptHtml`) into a **hidden iframe and prints that**, so the popup never closes/blankes when the browser print dialog opens (`Receipt` renders the identical HTML via `dangerouslySetInnerHTML` for screen preview).
+5. **Bill stays visible after settlement.** The popup no longer blanks after payment: `TableGrid`'s live-sync effect (§9.2.4) only swaps its `terminalTable` when the refreshed `/tables` feed still has an *open* session for that table — when a settled table briefly re-appears with `sessions: []` it keeps the current terminal instead of nulling it (older behaviour blanked the dialog right when the change was visible and printing could be lost).
+
+### 9.4a Viewing & cancelling bills (`/billing` → `BillingList`)
+
+- `BillingList` renders recent bills with status badge + amounts and a per-row **View** button: it fetches `GET /api/bills/<id>` (bill + payments + taxLines + session/table/customer/orders) and shows the full `Receipt` in a dialog — re-print past bills here.
+- Unpaid bills (`DRAFT`/`ISSUED`/`PARTIALLY_PAID`) get a **"Cancel this bill"** button (`window.confirm` then `PATCH /api/bills/<id>`): the bill → `VOID` (`voidedById`/`voidedAt`/`voidReason`), the **session stays OPEN and the table stays occupied** so a corrected order/bill can be re-issued. Paid bills show "Paid bills cannot be cancelled." and already voided/refunded bills "Bill already cancelled." — no button.
+- `src/app/api/bills/[id]/route.ts` gates **PATCH to managers only**: rejects `PAID` (must refund first) and already `VOID`/`REFUNDED` with 409.
 
 ### 9.5 Billing math — `src/lib/billing.ts` (`computeBillForSession`)
 
@@ -468,6 +475,8 @@ Conventions: helpers from `@/lib/api` (`apiAuth`), `@/lib/utils` (`jsonError`, `
 | PATCH | `/api/pos/orders/:id/items/:itemId` | staff | Update item qty (clamped 1–99); 409 unless DRAFT/SENT_TO_KITCHEN/PREPARING |
 | DELETE | `/api/pos/orders/:id/items/:itemId` | staff | Remove item; removing the last item cancels the order |
 | POST | `/api/pos/bills/:id/pay` | staff | Record payment; settles → closes session + frees table + loyalty |
+| GET | `/api/bills/:id` | staff | Full bill detail (payments, taxLines, session/table/customer/orders) for View dialogs |
+| PATCH | `/api/bills/:id` | manager | Cancel unpaid bill → `VOID` (409 if PAID/VOID/REFUNDED); session stays open |
 | **GET** | **`/api/m/tables`** | **public** | Open tables for guest checkout |
 | **POST** | **`/api/m/orders`** | **public** | Guest order (tamper-safe, §10.3) |
 
