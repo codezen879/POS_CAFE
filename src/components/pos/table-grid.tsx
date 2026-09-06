@@ -38,12 +38,16 @@ export function TableGrid({ tables, menu, store, customers, isManager }: { table
   const [manageOpen, setManageOpen] = useState(false);
 
   // Keep the open terminal in sync with server-refreshed props so order
-  // changes (send, edit, cancel, bill) appear live instead of showing a stale snapshot.
+  // changes (send, edit, cancel, bill, settle) appear live instead of showing a
+  // stale snapshot. But never swap out the open snapshot for a session-less one —
+  // after a bill is settled the session becomes CLOSED and the refreshed table has
+  // `sessions: []`; replacing the terminal then would blank the dialog before the
+  // staff can review/print the receipt.
   useEffect(() => {
     if (!terminalTable?.id) return;
     const fresh = tables.find((t) => t.id === terminalTable.id);
-    if (!fresh) setTerminalTable(null);
-    else if (fresh !== terminalTable) setTerminalTable(fresh);
+    if (!fresh) return;
+    if (fresh.sessions?.length && fresh !== terminalTable) setTerminalTable(fresh);
   }, [tables, terminalTable]);
 
   const occupiedCount = tables.filter((t) => t.status === "OCCUPIED").length;
