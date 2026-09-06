@@ -188,9 +188,9 @@ Enums: `Role` (SUPER_ADMIN, ADMIN, MANAGER, CASHIER, WAITER, KITCHEN) · `TableS
 | `StaffShift` | staff_shifts | Clock in/out with cash handling. |
 | `TaxRate` | tax_rates | `code` (CGST/SGST/…), `rate`, unique `[storeId, code]`. Used for GST split. |
 | `Setting` | settings | Key/value store, unique `[storeId, key]`. e.g. `service_charge_percent`, `loyalty_points_per_rupee`. |
-| `MenuCategory` | menu_categories | `slug` unique; `icon`, `sortOrder`, active flag; 1→N Products. |
+| `MenuCategory` | menu_categories | `slug` unique; `icon`, `sortOrder`, active flag; 1→N Products; owns 1→N AddonOptions (`addons`). |
 | `Product` | products | `basePrice` (Decimal), `costPrice`, `taxRateId`, `isVeg`, `isBestseller`, `isAvailable`, `prepTimeMins`, `maxOrderQty`, `image`, `sortOrder`. N—M with AddonOption via `ProductAddon`. |
-| `AddonOption` | addon_options | Reusable add-on ("Whipped Cream", "Extra Shot") with `price`. |
+| `AddonOption` | addon_options | Add-on ("Whipped Cream", "Extra Shot") with `price`. Optional `categoryId` FK → MenuCategory (`onDelete: SetNull`): **each add-on belongs to at most one category** — a category is the parent, its add-ons are children, and no two categories can share an add-on. |
 | `ProductAddon` | product_addons | Join: `productId × addonId` with `mandatory`, `maxSelect`, `sortOrder`. |
 | `Floor` | floors | Optional grouping for tables. |
 | `DiningTable` | tables | `tableName` (T1…), `seatCount`, `status`, `qrCode`. Owns `seats`. Has many sessions. |
@@ -447,7 +447,7 @@ Zustand store shared by `TableTerminal` and `DiningMenu`:
 ## 13. Menu & Inventory Management
 
 - `MenuManager` (manager-only `/menu`) manages categories/products/add-ons against `GET/POST /api/menu/categories` and `/api/products` + `/api/products/<id>` (PATCH supports `addonIds` replace — deletes then recreates `ProductAddon` rows). **`/api/products` intentionally has no GET handler** → a bare `GET /api/products` returns **405**; that is by design, not a bug.
-- Add-ons are global `AddonOptions` managed via `GET/POST /api/addons` + `PATCH/DELETE /api/addons/:id` (delete is 409-guarded once referenced by past `order_item_addons`). They can be attached at **two levels**: per-product (`ProductAddon`, via product PATCH `addonIds`) and per-category (`CategoryAddon`, via the category PATCH `addonIds`). The **effective** add-ons a guest/server picker shows for a product are `mergeProductAddons()` (`src/lib/addons.ts`): product links first, then inherited category links, deduped by addon id (product-level wins). `/tables`, `/m`, and kitchen/order flows all consume the merged set; `MenuManager` shows inherited add-ons as `(cat)` chips and the category edit dialog assigns category add-ons.
+- Add-ons are `AddonOptions` managed via `GET/POST /api/addons` + `PATCH/DELETE /api/addons/:id` (delete is 409-guarded once referenced by past `order_item_addons`). Ownership is **parent → child**: each add-on carries an optional `categoryId` FK to a `MenuCategory`, so every add-on belongs to exactly one category (or none) and categories can never share add-ons. PATCHing a category with `addonIds` **moves** ownership of those add-ons to that category (`updateMany` sets `categoryId`) and detaches to `null` any add-ons the category used to own that aren't in the list. Add-ons may additionally be attached per-product via `ProductAddon` (product PATCH `addonIds` replace). The **effective** set a guest/server picker shows is `mergeProductAddons()` (`src/lib/addons.ts`): product links first, then the owning category's `isActive` add-ons, deduped by addon id (product-level wins). `/api/m/orders` validates against that merged set so inherited category add-ons are never silently dropped. `/tables`, `/m`, and kitchen/order flows all consume the merged set; `MenuManager` shows the category owner on add-ons (chips + list rows, "unassigned" when `categoryId` is null), and the category edit dialog lets you assign/move add-ons into that category.
 - `InventoryManager` (manager-only `/inventory`) manages `GET/POST /api/stock` (ingredients, stock movements), plus suppliers via related routes. Order placement does **not** auto-consume stock — but defect-food cancellations and manual `/waste` records **do** write ingredients off as `WASTAGE` movements (§9.6).
 - `SettingsManager` (SUPER_ADMIN/ADMIN) edits `/api/settings` (key/value, e.g. `service_charge_percent`, `loyalty_points_per_rupee`). `TaxRates` editable via `/api/tax-rates`.
 
@@ -470,10 +470,10 @@ Conventions: helpers from `@/lib/api` (`apiAuth`), `@/lib/utils` (`jsonError`, `
 | GET | `/api/products` | — | **No handler (405 by design)** |
 | POST | `/api/products` | manager | Create product |
 | PATCH/DELETE | `/api/products/:id` | manager | Update product (incl. `addonIds` replace) / delete |
-| GET | `/api/addons` | manager | List all add-ons (usage counts: `_count.products` + `_count.categoryAddons`) |
-| POST | `/api/addons` | manager | Create add-on `{ name, flavour?, price=0, isActive? }` |
-| PATCH/DELETE | `/api/addons/:id` | manager | Update name/flavour/price/isActive / delete (409 once used by past `order_item_addons`) |
-| PATCH/DELETE | `/api/menu/categories/:id` | manager | Update name/icon/isActive + `addonIds` replace / delete (409 while products exist) |
+| GET | `/api/addons` | manager | List all add-ons (owning `category: { id, name }`, `_count.products` usage) |
+| POST | `/api/addons` | manager | Create add-on `{ name, flavour?, price=0, isActive?, categoryId? }` (category must exist when given) |
+| PATCH/DELETE | `/api/addons/:id` | manager | Update name/flavour/price/isActive/`categoryId` (null moves add-on back to unassigned; see below re: an already-assigned add-on) / delete (409 once used by past `order_item_addons`) |
+| PATCH/DELETE | `/api/menu/categories/:id` | manager | Update name/icon/isActive + `addonIds` **moves ownership** of those add-ons to this category (detaches any this category owned but that weren't listed) / delete (409 while products exist) |
 | GET | `/api/staff` | manager | List staff (id/name/email/role/isActive) |
 | POST | `/api/staff` | manager | Add staff (bcrypt password + generated 4-digit PIN) |
 | GET | `/api/customers` | staff | Customer list |
