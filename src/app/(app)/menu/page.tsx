@@ -9,15 +9,16 @@ export default async function MenuPage() {
   if (!session?.user) redirect("/login");
   const isManager = ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(session.user.role);
 
-  const [categories, taxRates, addons, store] = await Promise.all([
+const [categories, taxRates, addons, store] = await Promise.all([
     prisma.menuCategory.findMany({
       orderBy: { sortOrder: "asc" },
       include: {
+        addons: { include: { addon: true } },
         products: { orderBy: { sortOrder: "asc" }, include: { taxRate: true, addons: { include: { addon: true } } } },
       },
     }),
-    prisma.taxRate.findMany({ where: { isActive: true } }),
-    prisma.addonOption.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
+    prisma.taxRate.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
+    prisma.addonOption.findMany({ orderBy: { name: "asc" } }),
     prisma.store.findFirst(),
   ]);
 

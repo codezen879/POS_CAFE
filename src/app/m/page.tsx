@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { DiningMenu } from "@/components/dining/dining-menu";
 import { toPlain } from "@/lib/serialize";
+import { mergeProductAddons } from "@/lib/addons";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ export default async function PublicMenuPage({
           orderBy: { sortOrder: "asc" },
           include: {
             addons: { include: { addon: true } },
+            category: { include: { addons: { include: { addon: true } } } },
           },
         },
       },
@@ -37,6 +39,11 @@ export default async function PublicMenuPage({
         })
       : Promise.resolve(null),
   ]);
+
+  // Effective add-ons for the guest picker = product add-ons + inherited category add-ons.
+  for (const c of categories) {
+    for (const p of c.products) (p as any).addons = mergeProductAddons(p);
+  }
 
   return (
     <DiningMenu

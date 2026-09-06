@@ -217,6 +217,7 @@ model MenuCategory {
   sortOrder   Int       @default(0)
   isActive    Boolean   @default(true)
   products    Product[]
+  addons      CategoryAddon[]
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -262,6 +263,7 @@ model AddonOption {
   price           Decimal   @db.Decimal(10, 2)
   isActive        Boolean   @default(true)
   products        ProductAddon[]
+  categoryAddons  CategoryAddon[]
   orderItemAddons OrderItemAddon[]
   createdAt       DateTime  @default(now())
 
@@ -280,6 +282,20 @@ model ProductAddon {
 
   @@unique([productId, addonId])
   @@map("product_addons")
+}
+
+model CategoryAddon {
+  id         String       @id @default(cuid())
+  categoryId String
+  category   MenuCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  addonId    String
+  addon      AddonOption  @relation(fields: [addonId], references: [id], onDelete: Cascade)
+  mandatory  Boolean      @default(false)
+  maxSelect  Int?
+  sortOrder  Int          @default(0)
+
+  @@unique([categoryId, addonId])
+  @@map("category_addons")
 }
 
 // --------------------------- TABLES & SEATS -------------------------------
