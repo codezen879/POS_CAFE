@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>POS Cafe — Developer Reference</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+  * { box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, sans-serif; font-size: 10.5pt; line-height: 1.55; color: #1a202c; margin: 0; padding: 0; }
+  h1 { font-size: 20pt; border-bottom: 3px solid #7c3aed; padding-bottom: 8px; margin-top: 0; }
+  h1:not(:first-of-type) { break-before: page; }
+  h2 { font-size: 14.5pt; color: #5b21b6; border-bottom: 1px solid #ddd6fe; padding-bottom: 4px; margin-top: 22px; }
+  h3 { font-size: 12pt; margin-top: 18px; color: #111827; }
+  h4 { font-size: 11pt; margin-top: 14px; }
+  p { margin: 8px 0; }
+  code { font-family: 'JetBrains Mono', monospace; font-size: 8.8pt; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 4px; padding: 1px 4px; color: #be185d; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px; overflow-x: auto; break-inside: avoid; margin: 10px 0; }
+  pre code { background: transparent; border: none; color: inherit; padding: 0; font-size: 8.6pt; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; font-size: 8.9pt; margin: 10px 0; break-inside: avoid; }
+  th { background: #ede9fe; color: #3b0764; font-weight: 700; text-align: left; padding: 6px 8px; border: 1px solid #c4b5fd; }
+  td { padding: 5px 8px; border: 1px solid #d1d5db; vertical-align: top; }
+  tr:nth-child(even) td { background: #faf5ff; }
+  ul, ol { margin: 6px 0 6px 0; padding-left: 22px; }
+  li { margin: 3px 0; }
+  blockquote { border-left: 4px solid #7c3aed; background: #f5f3ff; margin: 10px 0; padding: 8px 12px; color: #4c1d95; }
+  hr { border: none; border-top: 1px solid #e5e7eb; margin: 18px 0; }
+  strong { color: #111827; }
+  a { color: #7c3aed; text-decoration: none; }
+  @page { size: A4; margin: 16mm 14mm 16mm 14mm; }
+</style></head>
+<body><h1>POS Cafe — Developer Reference &amp; Change Guide</h1>
+<p><strong>Version:</strong> 0.1.0 · <strong>Generated:</strong> September 2026 <strong>Repository:</strong> <code>codezen879/POS_CAFE</code> (GitHub) · <strong>Production:</strong> <code>https://pos-cafe-eight.vercel.app</code></p>
+<p>This document gives a developer everything needed to safely modify and deploy the POS Cafe application: architecture, data model, every API route, key UI flows (staff table service, kitchen display, billing, and the mobile QR ordering feature), conventions, and hard-won pitfalls.</p>
+<hr/>
+<h2>1. Project Overview</h2>
+<p>POS Cafe is a restaurant/café <strong>point-of-sale</strong> web application with:</p>
+<ul>
+<li><strong>Back-office app</strong> (staff): table service, order taking, kitchen display (KDS), billing with GST + service charge, payments (split supported), receipts (printable), customer loyalty + reviews, menu &amp; add-on management, inventory, staff management, settings, tax rates, and reports.</li>
+<li><strong>Mobile ordering app</strong> (guest): public pages at <code>/m</code> and <code>/m?table=&lt;id&gt;</code> where guests browse the menu, customize add-ons, add items to a cart, and send orders straight to the kitchen via Table-Service QR codes.</li>
+</ul>
+<h3>Stack</h3>
+<table><thead><tr><th>Layer</th><th>Technology</th></tr></thead><tbody><tr><td>Framework</td><td>Next.js <strong>15.2.8</strong> (App Router) on Node</td></tr><tr><td>UI</td><td>React <strong>19.0.1</strong>, Tailwind CSS 3.4, shadcn-style <code>components/ui</code>, lucide-react icons</td></tr><tr><td>Auth</td><td>NextAuth <strong>5.0.0-beta.25</strong> (Credentials provider, JWT strategy)</td></tr><tr><td>ORM</td><td>Prisma <strong>5.22</strong> (dual schema — see §4) + <code>@prisma/adapter-pg</code> (driver adapters)</td></tr><tr><td>State (client)</td><td>Zustand (cart)</td></tr><tr><td>Forms / misc</td><td>react-hook-form, zod, date-fns, recharts, qrcode.react, react-hot-toast</td></tr><tr><td>Local dev DB</td><td>MySQL (<code>prisma/schema.prisma</code>)</td></tr><tr><td>Production DB</td><td>PostgreSQL on <strong>Supabase</strong> (<code>prisma/schema.postgres.prisma</code>)</td></tr><tr><td>Hosting</td><td><strong>Vercel</strong> (project <code>pos-cafe</code>, account <code>codezen879</code>)</td></tr></tbody></table>
+<blockquote><strong>Why dual databases?</strong> Local development targets MySQL for speed and developer familiarity; the production deployment on Vercel targets a Supabase PostgreSQL instance. Nothing in application code knows which DB it is using — the Prisma client is selected at runtime (see §4).</blockquote>
+<hr/>
+<h2>2. Repository Layout</h2>
+<pre><code>POS_CAFE/
+├── prisma/
+│   ├── schema.prisma            # MySQL schema (local dev)
+│   ├── schema.postgres.prisma   # PostgreSQL schema (Supabase/Vercel) — generator outputs to ../src/generated/pg
+│   ├── seed.ts                  # MySQL seed
+│   └── seed.pg.ts               # PostgreSQL seed (idempotent upserts)
+├── public/
+├── docs/                        # this document
+├── next.config.ts               # minimal (reactStrictMode: true)
+├── tsconfig.json                # path alias "@/*" -&gt; "./src/*"
+├── .env .env.local              # NOT committed; see §5
+├── .gitignore                   # also ignores prod-server.log
+├── package.json
+└── src/
+    ├── generated/pg/            # generated Prisma client for PostgreSQL (ignored by git)
+    ├── app/
+    │   ├── layout.tsx           # root layout: &lt;Providers&gt; + globals.css
+    │   ├── globals.css          # Tailwind directives
+    │   ├── (auth)/login/page.tsx# PIN / password login form
+    │   ├── (app)/layout.tsx     # guarded app shell (redirects to /login)
+    │   ├── (app)/...            # dashboard, tables, kitchen, menu, orders, billing,
+    │   │                        # customers, inventory, staff, settings, reports
+    │   ├── m/page.tsx           # PUBLIC mobile guest menu (the /m app)
+    │   └── api/...              # all API route handlers (see §8)
+    ├── components/
+    │   ├── ui/                  # shadcn-style primitives
+    │   ├── app-shell.tsx        # sidebar + topbar for staff app
+    │   ├── providers.tsx        # SessionProvider + ThemeProvider + Toaster
+    │   ├── pos/                 # table-grid.tsx, table-terminal.tsx, bill-view.tsx,
+    │   │                        # receipt.tsx, open-table-dialog.tsx, manage-tables-dialog.tsx
+    │   ├── dining/dining-menu.tsx# guest mobile ordering UI
+    │   ├── kitchen/kitchen-board.tsx
+    │   ├── billing/billing-list.tsx
+    │   ├── orders/orders-list.tsx
+    │   ├── menu/menu-manager.tsx
+    │   ├── inventory/inventory-manager.tsx
+    │   ├── staff/staff-manager.tsx
+    │   ├── customers/customers-list.tsx
+    │   ├── reports/reports.tsx
+    │   ├── settings/settings-manager.tsx
+    │   └── dashboard/dashboard.tsx
+    ├── store/cart.ts            # zustand cart store shared by ordering UIs
+    ├── config/nav.ts            # navigation tree with per-role filtering
+    └── lib/
+        ├── auth.ts              # NextAuth config (credentials, JWT, trustHost)
+        ├── session.ts           # requireUser / requireRole / role helpers
+        ├── api.ts               # apiAuth(...roles) guard for route handlers
+        ├── prisma.ts            # runtime client selection (pg vs mysql)
+        ├── billing.ts           # computeBillForSession() — the tax engine
+        ├── serialize.ts         # toPlain() — Decimal/Date safe serialization
+        └── utils.ts             # cn, formatCurrency, generateReference, jsonError, …</code></pre>
+<hr/>
+<h2>3. Runtime &amp; Toolchain</h2>
+<ul>
+<li>Node <strong>24.14.1</strong>, npm (Vercel's build environment runs Node 22+).</li>
+<li>Install once: <code>npm install</code> (postinstall runs <code>prisma generate</code> for <strong>both</strong> schemas — this is why both clients exist).</li>
+<li>Verified dev commands:</li>
+<li><code>npm run dev</code> — local dev server</li>
+<li><code>npm run build</code> — production build (the authoritative check before committing)</li>
+<li><code>npm run vercel-build</code> — the Vercel install/build: generates both Prisma clients then <code>next build</code></li>
+<li><code>npm run db:push</code> / <code>npm run db:push:pg</code> — push schema to MySQL / PostgreSQL</li>
+<li><code>npm run db:seed</code> / <code>npm run db:seed:pg</code> — seed (Postgres variant requires <code>POSTGRES_URL</code>)</li>
+<li><code>npm run generate:pg</code> — regenerate the PostgreSQL client</li>
+<li><strong>Linting:</strong> there is no ESLint config; <code>npm run lint</code> (<code>next lint</code>) is effectively a no-op/deprecated. Use <code>npm run build</code> as the gate (Next runs its own type checks).</li>
+</ul>
+<hr/>
+<h2>4. The Two-Backend Architecture (Important)</h2>
+<h3>4.1 Two schemas, two generated clients</h3>
+<table><thead><tr><th></th><th>Local</th><th>Production</th></tr></thead><tbody><tr><td>Schema file</td><td><code>prisma/schema.prisma</code></td><td><code>prisma/schema.postgres.prisma</code></td></tr><tr><td>Datasource</td><td><code>mysql</code> / <code>DATABASE_URL</code></td><td><code>postgresql</code> / <code>POSTGRES_URL</code></td></tr><tr><td>Generated client</td><td><code>@prisma/client</code> (in <code>node_modules</code>)</td><td><code>../src/generated/pg</code> (custom output)</td></tr><tr><td>Driver</td><td>default (mysql2 under the hood)</td><td><code>@prisma/adapter-pg</code> (driver adapters)</td></tr></tbody></table>
+<p>The PostgreSQL schema adds <code>previewFeatures = ["driverAdapters"]</code> and <code>output = "../src/generated/pg"</code>.</p>
+<h3>4.2 Runtime selection — <code>src/lib/prisma.ts</code></h3>
+<pre><code>export const prisma: PrismaClient = process.env.POSTGRES_URL
+  ? createPostgresClient()   // Pool + PrismaPg adapter + generated/pg client
+  : new PrismaClient();      // default MySQL client</code></pre>
+<ul>
+<li>The exported object is typed as the MySQL <code>PrismaClient</code> to keep compile-time field types identical; the pg client is cast.</li>
+<li>Selecting by the presence of <code>POSTGRES_URL</code> means: set <code>POSTGRES_URL</code> locally and the *same code* talks to Supabase — this is the pattern used by the QA scripts and local testing.</li>
+<li>A global cache (<code>globalThis.prisma</code>) avoids leaking connections during dev hot-reloads.</li>
+</ul>
+<h3>4.3 Changing the schema — the golden rule</h3>
+<p><strong>Every model/field/enum change must be mirrored in BOTH schema files</strong>, or the MySQL and PostgreSQL apps drift. Procedure:</p>
+<ol>
+<li>Edit <code>prisma/schema.prisma</code> and <code>prisma/schema.postgres.prisma</code> identically.</li>
+<li><code>npm run db:push</code> (MySQL) and, with <code>POSTGRES_URL</code> set, <code>npm run db:push:pg</code> (Supabase).</li>
+<li><code>prisma generate</code> runs automatically on install; or run <code>npm run generate:pg</code> for the pg client.</li>
+<li>Update both seeders if you seeded sample data that should exist in both DBs.</li>
+</ol>
+<hr/>
+<h2>5. Environment Variables &amp; Secret Management</h2>
+<p><code>.env</code> / <code>.env.local</code> are gitignored. Required variables:</p>
+<table><thead><tr><th>Variable</th><th>Used by</th><th>Notes</th></tr></thead><tbody><tr><td><code>DATABASE_URL</code></td><td>MySQL (schema.prisma)</td><td>Local dev only. <strong>Also present (legacy) in Vercel but ignored on the pg path.</strong></td></tr><tr><td><code>POSTGRES_URL</code></td><td>PostgreSQL path + Supabase</td><td><strong>The signal that selects the pg backend.</strong> On Vercel this is the <strong>transaction pooler</strong> URL.</td></tr><tr><td><code>AUTH_SECRET</code></td><td>NextAuth v5 JWT signing</td><td>Any long random string; set identically across local + Vercel.</td></tr><tr><td><code>AUTH_URL</code></td><td>NextAuth</td><td>Production URL (<code>https://pos-cafe-eight.vercel.app</code>); Vercel sets it automatically but can be forced.</td></tr><tr><td><code>NEXT_PUBLIC_APP_NAME</code></td><td>Public branding</td><td>e.g. "POS Cafe"</td></tr><tr><td><code>NEXT_PUBLIC_APP_URL</code></td><td>Public links</td><td>Production URL</td></tr></tbody></table>
+<h3>Supabase connection URLs (project <code>nurjnwcxibvpiofgijtf</code>)</h3>
+<ul>
+<li><strong>Transaction pooler (<code>:6543</code>)</strong> — use on Vercel (serverless-safe) and inside transactions.</li>
+<li><strong>Session pooler (<code>:5432</code>)</strong> — use for local scripts, <code>prisma db push</code>, seeds.</li>
+<li>The <strong>legacy direct host is IPv6-only</strong> and will hang/never connect — do not use it.</li>
+</ul>
+<h3>Deploy environment</h3>
+<ul>
+<li>Vercel project <code>pos-cafe</code> (account <code>codezen879</code>). Production + Preview share the same env values.</li>
+<li>Deploy from the <strong>project directory only</strong>: <code>npx vercel --prod --yes</code>. Running <code>vercel</code> from your home directory triggers the "deploying home directory" prompt and fails.</li>
+<li><strong><code>trustHost: true</code></strong> in <code>src/lib/auth.ts</code> is required for NextAuth v5 to trust the Vercel host (otherwise callbacks/sign-ins break).</li>
+<li><strong>Vercel blocks vulnerable Next versions</strong>: it refused to build Next <strong>15.2.4</strong> ("Vulnerable version of Next.js detected", CVE-2025-66478). The lockfile pins <code>next@15.2.8</code>, <code>react@19.0.1</code>, <code>react-dom@19.0.1</code>. Never downgrade below 15.2.8 without a release, or deploys will be rejected.</li>
+</ul>
+<h3>Seeded credentials (both DBs)</h3>
+<table><thead><tr><th>Role</th><th>Email</th><th>Password</th><th>PIN</th></tr></thead><tbody><tr><td>SUPER_ADMIN (Store Admin)</td><td>admin@poscafe.example</td><td>admin123</td><td>1234</td></tr><tr><td>CASHIER (Rahul)</td><td>cashier@poscafe.example</td><td>staff123</td><td>5678</td></tr><tr><td>KITCHEN (Chef Ayesha)</td><td>kitchen@poscafe.example</td><td>staff123</td><td>1111</td></tr></tbody></table>
+<hr/>
+<h2>6. Data Model</h2>
+<p>Enums: <code>Role</code> (SUPER_ADMIN, ADMIN, MANAGER, CASHIER, WAITER, KITCHEN) · <code>TableStatus</code> (AVAILABLE, OCCUPIED, RESERVED, CLEANING, CLOSED) · <code>SeatStatus</code> (FREE, OCCUPIED) · <code>SessionStatus</code> (OPEN, CLOSED, CANCELLED) · <code>OrderType</code> (DINE_IN, TAKEAWAY, DELIVERY, ONLINE) · <code>OrderStatus</code> (DRAFT, SENT_TO_KITCHEN, PREPARING, READY, PARTIALLY_SERVED, SERVED, CANCELLED) · <code>BillStatus</code> (DRAFT, ISSUED, PARTIALLY_PAID, PAID, VOID, REFUNDED) · <code>PaymentMethod</code> (CASH, CARD, UPI, WALLET, SPLIT, ON_ACCOUNT) · <code>PaymentStatus</code> (PENDING, COMPLETED, FAILED, REFUNDED, VOIDED) · <code>StockMovementType</code> (PURCHASE, CONSUMPTION, ADJUSTMENT, STOCKTAKE, WASTAGE) · <code>LoyaltyType</code> (EARN, REDEEM, EXPIRE, ADJUST).</p>
+<table><thead><tr><th>Model</th><th>Table</th><th>Responsibilities / key relationships</th></tr></thead><tbody><tr><td><code>User</code></td><td>users</td><td>Staff. <code>passwordHash</code> + <code>pin</code> (bcrypt). Optional <code>storeId</code>. Related to shifts/sessions/orders/payments/bills/invoices.</td></tr><tr><td><code>Store</code></td><td>stores</td><td>Single store is the norm (<code>store.findFirst()</code> everywhere). Holds GSTIN, address, currency, tax rates, settings, sessions, tables.</td></tr><tr><td><code>StaffShift</code></td><td>staff_shifts</td><td>Clock in/out with cash handling.</td></tr><tr><td><code>TaxRate</code></td><td>tax_rates</td><td><code>code</code> (CGST/SGST/…), <code>rate</code>, unique <code>[storeId, code]</code>. Used for GST split.</td></tr><tr><td><code>Setting</code></td><td>settings</td><td>Key/value store, unique <code>[storeId, key]</code>. e.g. <code>service_charge_percent</code>, <code>loyalty_points_per_rupee</code>.</td></tr><tr><td><code>MenuCategory</code></td><td>menu_categories</td><td><code>slug</code> unique; <code>icon</code>, <code>sortOrder</code>, active flag; 1→N Products.</td></tr><tr><td><code>Product</code></td><td>products</td><td><code>basePrice</code> (Decimal), <code>costPrice</code>, <code>taxRateId</code>, <code>isVeg</code>, <code>isBestseller</code>, <code>isAvailable</code>, <code>prepTimeMins</code>, <code>maxOrderQty</code>, <code>image</code>, <code>sortOrder</code>. N—M with AddonOption via <code>ProductAddon</code>.</td></tr><tr><td><code>AddonOption</code></td><td>addon_options</td><td>Reusable add-on ("Whipped Cream", "Extra Shot") with <code>price</code>.</td></tr><tr><td><code>ProductAddon</code></td><td>product_addons</td><td>Join: <code>productId × addonId</code> with <code>mandatory</code>, <code>maxSelect</code>, <code>sortOrder</code>.</td></tr><tr><td><code>Floor</code></td><td>floors</td><td>Optional grouping for tables.</td></tr><tr><td><code>DiningTable</code></td><td>tables</td><td><code>tableName</code> (T1…), <code>seatCount</code>, <code>status</code>, <code>qrCode</code>. Owns <code>seats</code>. Has many sessions.</td></tr><tr><td><code>TableSeat</code></td><td>table_seats</td><td>Per-table seats, unique <code>[tableId, seatNo]</code>.</td></tr><tr><td><code>Customer</code></td><td>customers</td><td>Loyalty: <code>loyaltyPoints</code>, <code>tier</code>. Has sessions, reviews, loyaltyTxns.</td></tr><tr><td><code>TableSession</code></td><td>sessions</td><td><strong>The unit of service.</strong> <code>sessionNumber</code> (unique, e.g. <code>TAB-…</code>), <code>tableId</code>, <code>guestCount</code>, <code>customerId</code>, <code>servedById</code>, <code>status</code> (OPEN/CLOSED). Has orders; 1:1 bill.</td></tr><tr><td><code>Order</code></td><td>orders</td><td><code>orderNumber</code> (unique), <code>sessionId</code>, <code>type</code>, <code>status</code>; lifecycle timestamps <code>sentToKitchenAt / prepStartedAt / readyAt / servedAt / cancelledAt</code>.</td></tr><tr><td><code>OrderItem</code></td><td>order_items</td><td>Snapshot of <code>name</code> + <code>unitPrice</code> + <code>quantity</code> + <code>note</code> (price/name snapshotted so later menu edits don't rewrite history).</td></tr><tr><td><code>OrderItemAddon</code></td><td>order_item_addons</td><td>Addon snapshot per order item: <code>name</code>, <code>price</code>, <code>quantity</code>.</td></tr><tr><td><code>Bill</code></td><td>bills</td><td><code>billNumber</code> unique, 1:1 with session. Holds computed <code>subtotal / discountAmount / taxTotal / serviceCharge / roundOff / total / paidAmount / dueAmount</code>, plus <code>issuedById</code>, <code>voidReason</code>, tax lines, payments, invoice 1:1, credit note 1:1.</td></tr><tr><td><code>BillTaxLine</code></td><td>bill_tax_lines</td><td>One row per tax code on the bill (rate, baseAmount, taxAmount).</td></tr><tr><td><code>Payment</code></td><td>payments</td><td><code>method</code>, <code>amount</code>, <code>status</code>, <code>receivedById</code>, <code>paidAt</code>. Split payments = many rows against one bill.</td></tr><tr><td><code>Invoice</code></td><td>invoices</td><td>GST invoice snapshot (taxableValue, cgst, sgst, igst, total).</td></tr><tr><td><code>CreditNote</code></td><td>credit_notes</td><td><code>noteNumber</code>, <code>amount</code>, <code>reason</code>.</td></tr><tr><td><code>LoyaltyTransaction</code></td><td>loyalty_transactions</td><td>points earn/redeem ledger per customer.</td></tr><tr><td><code>Review</code></td><td>reviews</td><td>Star rating + comment, optionally tied to customer/session.</td></tr><tr><td><code>Supplier</code></td><td>suppliers</td><td>Ingredient supplier with contact info, ideologies for movements.</td></tr><tr><td><code>Ingredient</code></td><td>ingredients</td><td>Stocked raw material: <code>stockQty</code>, <code>reorderLevel</code>, <code>costPerUnit</code>.</td></tr><tr><td><code>RecipeItem</code></td><td>recipe_items</td><td>How much of an ingredient a product consumes (<code>qtyUsed</code>).</td></tr><tr><td><code>StockMovement</code></td><td>stock_movements</td><td><code>type</code>, <code>quantity</code>, <code>unitCost</code>, <code>note</code>. Ingredient stock audit trail.</td></tr></tbody></table>
+<p><strong>Design notes to respect while coding:</strong></p>
+<ul>
+<li><strong>Money is <code>Decimal(10,2)</code></strong> in the DB. Prisma returns <code>Decimal</code> objects that <strong>cannot be serialized to JSON</strong> or passed into client components directly — always wrap payloads with <code>toPlain()</code> (see §7).</li>
+<li><strong>Price/name snapshots</strong>: <code>OrderItem.name/unitPrice</code> and <code>OrderItemAddon.name/price</code> are copied at order time. Never recompute them from <code>Product</code> on read.</li>
+<li><strong>Order lifecycle statuses</strong> flow DRAFT → SENT_TO_KITCHEN → PREPARING → READY → (PARTIALLY_)SERVED, with <code>CANCELLED</code> a terminal state. The kitchen board only shows statuses in that pipeline.</li>
+<li><strong>Session === occupancy</strong>: a table is "occupied" while a session with <code>status: OPEN</code> exists. Opening creates the session and sets <code>DiningTable.status = OCCUPIED</code>; paying the full bill closes the session and frees the table (see §9).</li>
+</ul>
+<hr/>
+<h2>7. Server Data Plumbing &amp; Serialization</h2>
+<h3>7.1 <code>toPlain()</code> — <code>src/lib/serialize.ts</code></h3>
+<p>Every client component receives its data as JSON over the server boundary. Prisma <code>Decimal</code> and <code>Date</code> fields break that (Next error: "Only plain objects can be passed to Client Components"). The one-liner for that is:</p>
+<pre><code>export function toPlain&lt;T&gt;(value: T): T {
+  return JSON.parse(JSON.stringify(value, (_k, v) =&gt; {
+    if (isDecimal(v)) return v.toNumber();
+    if (v instanceof Date) return v.toISOString();
+    if (v instanceof Map) return Object.fromEntries(v);
+    if (v instanceof Set) return Array.from(v);
+    return v;
+  }));
+}</code></pre>
+<p><strong>Pattern:</strong> in server components/page.tsx, query with Prisma then return <code>&lt;ClientComponent data={toPlain(data) as any} /&gt;</code>. See <code>src/app/m/page.tsx</code> and <code>src/app/(app)/tables/page.tsx</code> for live examples.</p>
+<h3>7.2 Dynamic rendering</h3>
+<p>Pages that call <code>auth()</code> or <code>searchParams</code> are inherently dynamic. The public <code>/m</code> page explicitly sets <code>export const dynamic = "force-dynamic"</code> because it must reflect live menu + table state. New public pages should do the same; new staff pages mostly inherit dynamism from <code>auth()</code>.</p>
+<h3>7.3 Helpers — <code>src/lib/utils.ts</code></h3>
+<ul>
+<li><code>cn(...)</code> — <code>clsx</code> + <code>tailwind-merge</code> for conditional classes (use everywhere, never template strings).</li>
+<li><code>formatCurrency(n, "INR")</code> — <code>Intl.NumberFormat("en-IN")</code>; returns <code>₹&lt;value&gt;</code> fallback. <strong>Note: no space — <code>"₹30.00"</code>.</strong></li>
+<li><code>formatDate / formatDateTime / formatTime / timeAgo</code> — en-IN locale helpers. <code>timeAgo</code> powers the KDS.</li>
+<li><code>generateReference(prefix)</code> — <code>PREFIX-&lt;base36 timestamp&gt;&lt;rand4&gt;</code>; used for <code>ORD-…</code>, <code>TAB-…</code>, <code>BILL-…</code>.</li>
+<li><code>initials(name)</code>, <code>slugify(str)</code>.</li>
+<li><code>jsonError(message, status=500)</code> — returns <code>Response.json({ error })</code>; the caller convention.</li>
+</ul>
+<hr/>
+<h2>8. Authentication &amp; Authorization</h2>
+<h3>8.1 NextAuth config — <code>src/lib/auth.ts</code></h3>
+<ul>
+<li><strong>Provider:</strong> Credentials only. The form submits <code>email</code> (identifier: email <strong>or</strong> user id, resolved with <code>findFirst OR</code>), plus either <code>pin</code> or <code>password</code>.</li>
+<li><strong>PIN login</strong> (fast path for terminals): compares against <code>user.pin</code> via bcrypt. If <code>pin</code> is supplied, PIN wins over password.</li>
+<li><strong>Password login</strong>: compares against <code>user.passwordHash</code>.</li>
+<li><strong>Strategy:</strong> JWT (<code>session: { strategy: "jwt" }</code>). The <code>jwt</code> and <code>session</code> callbacks stamp <code>id</code>, <code>role</code>, <code>storeId</code> onto the token and session user.</li>
+<li><code>pages.signIn = "/login"</code>, <code>trustHost: true</code>.</li>
+<li>Route handlers: <code>src/app/api/auth/[...nextauth]/route.ts</code> exports <code>{ handlers }</code>.</li>
+</ul>
+<h3>8.2 Server-side guards</h3>
+<ul>
+<li><code>src/lib/session.ts</code>:</li>
+<li><code>getCurrentUser()</code> — <code>auth()?.user ?? null</code>.</li>
+<li><code>requireUser()</code> — redirects to <code>/login</code>.</li>
+<li><code>requireRole(...roles)</code> — redirects to <code>/</code> if role not allowed (empty = any authenticated user).</li>
+<li><code>isManager(role)</code> / <code>canManage(role)</code> — <code>SUPER_ADMIN | ADMIN | MANAGER</code>.</li>
+<li><code>isServerStaff(role)</code> — role is CASHIER/WAITER/MANAGER/ADMIN/SUPER_ADMIN (usable for terminal access checks).</li>
+<li><code>src/lib/api.ts</code>:</li>
+<li><code>apiAuth(...roles)</code> — for route handlers. Returns the <code>{ id, role, storeId }</code> user or a <code>Response</code> (401/403). <strong>The universal route-handler pattern:</strong></li>
+</ul>
+<pre><code>export async function GET() {
+  const user = await apiAuth("SUPER_ADMIN", "ADMIN", "MANAGER");
+  if (user instanceof Response) return user;
+  // ... do work ...
+  return Response.json({ ... });
+}</code></pre>
+<ul>
+<li><strong>There is no middleware.ts</strong> — all protection is per-page (layout) and per-route (<code>apiAuth</code>). The <code>(app)</code> layout redirects unauthenticated users; public paths (<code>/login</code>, <code>/m</code>, <code>/api/m/*</code>, and the endpoints intentionally listed in §8.3) are unprotected by design.</li>
+</ul>
+<h3>8.3 Public (unauthenticated) endpoints — intentional</h3>
+<table><thead><tr><th>Endpoint</th><th>Why public</th></tr></thead><tbody><tr><td><code>/login</code>, <code>/api/auth/*</code></td><td>Auth entry point</td></tr><tr><td><code>/m</code>, <code>/m?table=&lt;id&gt;</code></td><td>Guest mobile menu</td></tr><tr><td><code>GET /api/m/tables</code></td><td>Guest checkout lists open tables</td></tr><tr><td><code>POST /api/m/orders</code></td><td>Guest places an order (safe because product names/prices are re-hydrated server-side — see §10.3)</td></tr></tbody></table>
+<h3>8.4 Role gating in the UI</h3>
+<p><code>src/config/nav.ts</code> defines the sidebar; <code>getNavGroups(role)</code> filters items with an <code>roles</code> array (Menu, Inventory, Staff, Reports → manager; Settings → SUPER_ADMIN/ADMIN). Add a new page by adding a <code>NavItem</code>; add <code>roles</code> to hide it from lower roles.</p>
+<hr/>
+<h2>9. Staff App — Core Flows</h2>
+<h3>9.1 Login (<code>/login</code>)</h3>
+<p>Client form with a PIN/Password toggle; calls <code>signIn("credentials", { redirect: false, ... })</code>, toast on error, then <code>router.push(callbackUrl)</code>.</p>
+<h3>9.2 Table Service (<code>/tables</code> → <code>TableGrid</code> → <code>TableTerminal</code>)</h3>
+<ol>
+<li><strong>Server query</strong> (<code>(app)/tables/page.tsx</code>): loads tables (with floor, OPEN sessions, customer, orders with items+addons), the menu (categories → active products with taxRate + addons), store (with taxRates), and recent customers for quick attach. All payloads run through <code>toPlain</code>.</li>
+<li><strong><code>TableGrid</code></strong> renders colored table cards. Click behavior:</li>
+</ol>
+<ul>
+<li>occupied + has session → open <strong><code>TableTerminal</code></strong>;</li>
+<li>otherwise → <strong><code>OpenTableDialog</code></strong> (guest count + optional customer); on success calls <code>POST /api/pos/tables/&lt;id&gt;/open</code> → creates session <code>TAB-…</code>, frees nothing, sets table OCCUPIED.</li>
+<li>A <strong>Menu QR</strong> dialog shows the generic <code>/m</code> QR and one QR per currently open table (value <code>/m?table=&lt;tableId&gt;</code>).</li>
+<li>Manager-only <strong>Manage</strong> dialog (PATCH/DELETE via <code>/api/tables/:id</code>).</li>
+</ul>
+<ol>
+<li><strong><code>TableTerminal</code></strong> — the ordering/billing screen for one table:</li>
+</ol>
+<ul>
+<li>Category chips → product cards (veg mark, code, price, prep time). Tapping a product with add-ons opens the add-on stepper (qty per add-on); without add-ons it adds directly.</li>
+<li>Cart panel (zustand <code>useCart</code>): line items with add-on lines, qty steppers, remove; <strong>Send to kitchen</strong> → <code>POST /api/pos/sessions/&lt;id&gt;/order</code> (staff-authorized), then <code>toast.success("Order sent to kitchen")</code>, clears cart, refreshes.</li>
+<li><strong>Bill</strong> tab → <code>BillView</code> (§9.4).</li>
+</ul>
+<ol>
+<li><strong>Live order management (Placed orders)</strong> — a panel below the cart lists every active order for the table with <code>orderNumber</code>, live status badge, and <code>timeAgo(placedAt)</code>:</li>
+</ol>
+<ul>
+<li><strong>Editable while <code>DRAFT</code> / <code>SENT_TO_KITCHEN</code> / <code>PREPARING</code></strong> (<code>EDITABLE_STATUSES</code> in <code>table-terminal.tsx</code>): qty steppers (<code>PATCH</code>), per-item remove (<code>DELETE</code>), and a <strong>Cancel</strong> button (confirm via <code>window.confirm</code>, reuses <code>PATCH /api/pos/orders/&lt;id&gt;</code>). Edits lock once <code>READY</code>, showing "This order can no longer be edited."</li>
+<li><strong>Item API</strong> lives in <code>src/app/api/pos/orders/[id]/items/[itemId]/route.ts</code>: <code>PATCH { quantity }</code> clamps 0–99 and rejects non-editable statuses with 409; <code>DELETE</code> removes the item and <strong>auto-cancels the order when the last item is removed</strong>.</li>
+<li>TableGrid keeps the open terminal live: a <code>useEffect</code> re-syncs <code>terminalTable</code> from the refreshed <code>tables</code> prop, so send/edit/cancel/bill updates appear without reopening the table.</li>
+</ul>
+<h3>9.3 Kitchen Display (<code>/kitchen</code> → <code>KitchenBoard</code>)</h3>
+<ul>
+<li>Polls <code>GET /api/pos/kitchen/orders</code> every <strong>8 s</strong> (setInterval + <code>load()</code> callback). Endpoint returns orders with <code>status in (SENT_TO_KITCHEN, PREPARING, READY, PARTIALLY_SERVED)</code> ordered by <code>sentToKitchenAt</code>.</li>
+<li>Kanban columns defined in <code>COLUMNS</code>; each card lists <code>orderNumber</code>, table name, <code>timeAgo(sentToKitchenAt)</code>, items with qty + add-ons (+ note in italics/destructive), and an <strong>advance button</strong>: <code>PATCH /api/pos/orders/&lt;id&gt;</code> <code>{ status }</code> → the STATUS_FIELD map stamps <code>prepStartedAt / readyAt / servedAt</code> automatically and rejects transitions on CANCELLED/SERVED.</li>
+</ul>
+<h3>9.4 Billing &amp; Payment (<code>BillView</code>, <code>Receipt</code>)</h3>
+<ol>
+<li><code>BillView</code> loads <code>GET /api/pos/sessions/&lt;id&gt;/bill-detailed</code> (bill + payments + taxLines + session/table/customer/orders).</li>
+<li>If no bill yet: discount UI (None / ₹ flat / % off; optional "Redeem points" — see §12) → <strong>Generate bill</strong> → <code>POST /api/pos/sessions/&lt;id&gt;/bill</code>. That route reads the <code>service_charge_percent</code> Setting, calls <code>computeBillForSession()</code>, and <strong>upserts</strong> the Bill keyed on <code>sessionId</code>, replacing <code>taxLines</code> wholesale (<code>deleteMany</code> + <code>create</code>). Bill becomes <code>ISSUED</code> with <code>dueAmount = total</code>.</li>
+<li>Payment grid (CASH / UPI / CARD / SPLIT) + amount input (defaults to due) → <strong>Receive</strong> → <code>POST /api/pos/bills/&lt;id&gt;/pay</code>:</li>
+</ol>
+<ul>
+<li>Creates a <code>Payment</code> (amount, method, receivedById).</li>
+<li>Updates <code>paidAmount</code>/<code>dueAmount</code>; <code>isPaid</code> when <code>paidAmount &gt;= total - 0.01</code> → status <code>PAID</code> else <code>PARTIALLY_PAID</code>.</li>
+<li><strong>On full settlement inside a <code>$transaction</code>:</strong> closes the session (<code>CLOSED</code>, <code>closedAt</code>), frees the table (<code>AVAILABLE</code>), and if a customer is attached, awards loyalty points (<code>loyalty_points_per_rupee</code> Setting, <code>Math.floor(total)</code>) + inserts an EARN <code>LoyaltyTransaction</code>.</li>
+</ul>
+<ol>
+<li>Settled bill → <code>Receipt</code>: printable 80 mm receipt (<code>#receipt-print</code> visibility trick under <code>@media print</code>), plus "This table left a review?" star dialog (<code>POST /api/reviews</code>).</li>
+</ol>
+<h3>9.5 Billing math — <code>src/lib/billing.ts</code> (<code>computeBillForSession</code>)</h3>
+<p>Consumed by the bill route; single source of truth for totals:</p>
+<pre><code>lineBase     = (unitPrice + Σ addon.price×qty) × qty          // per item
+subtotal     = Σ lineBase
+taxBucket    = product.taxRate.rate split in two: CGST + SGST, each rate/2
+taxAmount    = lineBase × (rate/2) / 100  → per bucket
+discount     = if PERCENTAGE: subtotal×value/100
+               if FIXED: min(value, subtotal)
+taxableBase  = subtotal − discount
+taxTotal     = Σ bucket × taxableBase/100 × ... (bucket applies to taxableBase)
+serviceCharge= subtotal × serviceChargePercent/100
+total        = taxableBase + taxTotal + serviceCharge</code></pre>
+<p>All steps <code>round2</code> (×100/100). Excludes orders with status <code>CANCELLED</code> or <code>DRAFT</code>. <strong>When you change pricing logic, change this file — never inline the math in route handlers.</strong></p>
+<hr/>
+<h2>10. Mobile QR Ordering (<code>/m</code> — the guest feature)</h2>
+<h3>10.1 Route wiring</h3>
+<p>Public guest ordering lives under three pieces:</p>
+<table><thead><tr><th>Piece</th><th>Responsibility</th></tr></thead><tbody><tr><td><code>src/app/m/page.tsx</code></td><td><code>force-dynamic</code> RSC. Queries store, active categories (products + addons), and if <code>?table=</code> present, resolves that table + its latest OPEN session. Passes <code>table</code> prop to the client component.</td></tr><tr><td><code>src/components/dining/dining-menu.tsx</code></td><td>All guest UX (menu grid, Customize sheet, cart sheet, table chooser, send, success banner).</td></tr><tr><td><code>GET /api/m/tables</code></td><td>Public; returns <code>{ tables: [{ id, tableName }] }</code> for tables with an OPEN session (drives the checkout "Choose your table" step).</td></tr><tr><td><code>POST /api/m/orders</code></td><td>Public; validates and creates the kitchen order (see §10.3).</td></tr></tbody></table>
+<h3>10.2 UX state machine (<code>dining-menu.tsx</code>)</h3>
+<p><code>const tableLocked = !!table?.id &amp;&amp; !table?.sessions?.[0];</code> — a <strong>bound-but-not-open</strong> table (server hasn't opened the session) blocks ordering and shows "This table isn't open yet — please ask your server." Otherwise guests can always add items:</p>
+<ul>
+<li><strong>Item card = a full <code>&lt;button&gt;</code></strong>; <code>onClick</code> opens the Customize sheet when the product has active add-ons, else adds it directly. <code>active:scale-[0.98]</code> gives tap feedback (this replaced the earlier silently-disabled buttons — see §14).</li>
+<li><strong>Customize sheet</strong>: add-on rows are <code>&lt;button aria-pressed&gt;</code> toggles; selected rows highlight, show a <code>&lt;Check&gt;</code> icon and <code>+₹&lt;price&gt;</code>. Quantity stepper (1–99). "Add N to your order" → <code>addItem</code> with chosen add-ons.</li>
+<li><strong>Cart sheet</strong> (bottom sheet, <code>max-h-[85vh]</code>): line items with add-on line, qty steppers, remove; subtotal via <code>computeSummary(lines)</code> (tax = 0 client-side; real tax is applied server-side at billing only).</li>
+<li>If no table is bound (<code>!table?.id</code>), a <strong>table picker</strong> lists open tables from <code>/api/m/tables</code>; selecting one enables Send. Send button label switches to <strong>"Pick your table, then send"</strong> until chosen.</li>
+<li>Send → <code>POST /api/m/orders</code> with <code>{ tableId: targetTableId, items: [{ productId, quantity, note, addons: [{id, quantity}] }] }</code>.</li>
+<li><strong>Success banner</strong>: <code>"N item(s) sent to the kitchen for Table T2"</code> (emerald pill), cart cleared.</li>
+</ul>
+<p><strong>Single-flight rule with <code>targetTableId</code>:</strong> <code>table?.id</code> (from the QR) <strong>or</strong> the guest-picked <code>guestTableId</code>. Never both.</p>
+<h3>10.3 Order tamper-resistance (<code>POST /api/m/orders</code>)</h3>
+<p>The guest sends only <strong>IDs</strong> (productId, addon ids + quantities, note) — never names or prices:</p>
+<ol>
+<li><code>tableId</code> must exist and have an OPEN session, else 404/400.</li>
+<li>Products are re-fetched by id server-side; only <code>ProductAddon</code> links pointing at <code>isActive</code> AddonOptions are honored (unknown → filtered out).</li>
+<li><code>name</code>, <code>unitPrice = product.basePrice</code>, and addon <code>name/price</code> are <strong>hydrated from the DB</strong>, so a malicious client cannot undercut prices or spoof names.</li>
+<li>Clamps: <code>MAX_ITEMS = 50</code>, <code>MAX_QTY = 99</code>, per-addon qty ≤ 9.</li>
+<li>Order is created with <code>status: "SENT_TO_KITCHEN"</code>, <code>sentToKitchenAt: now</code>, <code>orderNumber = ORD-…</code> (generated on the client terminal path too, via <code>generateReference</code>), and appears on the KDS automatically.</li>
+</ol>
+<p><strong>Known constraint:</strong> guest orders are tied to the table's OPEN session; if the session closes mid-cart the send will 400 ("This table is not open yet").</p>
+<hr/>
+<h2>11. Cart Store (<code>src/store/cart.ts</code>)</h2>
+<p>Zustand store shared by <code>TableTerminal</code> and <code>DiningMenu</code>:</p>
+<ul>
+<li><code>CartLine = { key, productId, name, unitPrice, quantity, note?, addons: CartAddon[] }</code>; <strong><code>key</code> is generated per add</strong> (<code>&lt;productId&gt;-&lt;Date.now()&gt;-&lt;rand4&gt;</code>).</li>
+<li><code>addItem</code> <strong>merges</strong> consecutive identical plain (no-addon) lines: same <code>productId + note</code> with both addon arrays empty → quantities added. Any add-ons always produce a fresh line (merging addon lines is deliberately not implemented).</li>
+<li><code>updateQty</code> with qty ≤ 0 removes the line.</li>
+<li><code>computeSummary(lines)</code> returns <code>{ subtotal, tax: 0, total: subtotal }</code> — used only for the guest cart display; authoritative totals happen in billing.</li>
+</ul>
+<hr/>
+<h2>12. Loyalty, Reviews &amp; Customers</h2>
+<ul>
+<li><strong>Attach customer</strong> at table-open (OpenTableDialog selects from <code>/api/customers</code>, recent 50) or via phone in the Redeem dialog.</li>
+<li><code>GET /api/customers/find?phone=+91…</code> → customer (or <code>{ customer: null }</code>).</li>
+<li><strong>Redeem</strong> (<code>bill-view.tsx</code> → <code>/api/customers/&lt;id&gt;/redeem</code>, <code>POST { points }</code>) → <code>{ cashValue }</code>; 100 points = ₹1, applied as a <strong>FIXED</strong> discount before bill generation. <code>LoyaltyTransaction</code> rows track EARN/REDEEM.</li>
+<li><strong>Earn</strong> happens automatically on full payment for the attached customer (see §9.4).</li>
+<li><strong>Reviews</strong> <code>POST /api/reviews { customerId, rating, comment }</code> from the post-settlement review dialog.</li>
+</ul>
+<hr/>
+<h2>13. Menu &amp; Inventory Management</h2>
+<ul>
+<li><code>MenuManager</code> (manager-only <code>/menu</code>) manages categories/products/add-ons against <code>GET/POST /api/menu/categories</code> and <code>/api/products</code> + <code>/api/products/&lt;id&gt;</code> (PATCH supports <code>addonIds</code> replace — deletes then recreates <code>ProductAddon</code> rows). <strong><code>/api/products</code> intentionally has no GET handler</strong> → a bare <code>GET /api/products</code> returns <strong>405</strong>; that is by design, not a bug.</li>
+<li>Add-ons are global <code>AddonOptions</code>; linking them to a product creates <code>ProductAddon</code>.</li>
+<li><code>InventoryManager</code> (manager-only <code>/inventory</code>) manages <code>GET/POST /api/stock</code> (ingredients, stock movements), plus suppliers via related routes. There is <strong>no automated stock deduction</strong> on order placement yet — ingredients are adjusted manually.</li>
+<li><code>SettingsManager</code> (SUPER_ADMIN/ADMIN) edits <code>/api/settings</code> (key/value, e.g. <code>service_charge_percent</code>, <code>loyalty_points_per_rupee</code>). <code>TaxRates</code> editable via <code>/api/tax-rates</code>.</li>
+</ul>
+<hr/>
+<h2>14. API Route Inventory</h2>
+<p>Conventions: helpers from <code>@/lib/api</code> (<code>apiAuth</code>), <code>@/lib/utils</code> (<code>jsonError</code>, <code>generateReference</code>). <code>params</code> is a <code>Promise</code> in Next 15 — always <code>await params</code>. Route handlers return <code>Response.json({...})</code>; errors are <code>{ error }</code> with <code>jsonError</code>.</p>
+<table><thead><tr><th>Method</th><th>Route</th><th>Auth</th><th>Purpose</th></tr></thead><tbody><tr><td>POST</td><td><code>/api/auth/[...nextauth]</code></td><td>public</td><td>NextAuth handlers</td></tr><tr><td>GET</td><td><code>/api/tables</code></td><td>manager</td><td>All tables + floor + <code>_count.sessions</code></td></tr><tr><td>POST</td><td><code>/api/tables</code></td><td>manager</td><td>Create table (also creates <code>seatCount</code> <code>TableSeat</code>s)</td></tr><tr><td>GET</td><td><code>/api/tables/floors</code></td><td>manager</td><td>(floors for selects)</td></tr><tr><td>PATCH</td><td><code>/api/tables/:id</code></td><td>manager</td><td>Update name/floor/seats/status; site-aware seat add/remove</td></tr><tr><td>DELETE</td><td><code>/api/tables/:id</code></td><td>manager</td><td>Delete table (blocked while an OPEN session exists)</td></tr><tr><td>GET</td><td><code>/api/floors</code>, PATCH/DELETE <code>/api/floors/:id</code></td><td>manager</td><td>Floor CRUD</td></tr><tr><td>GET</td><td><code>/api/menu/categories</code></td><td>manager/client</td><td>Categories (+ products via include)</td></tr><tr><td>GET</td><td><code>/api/products</code></td><td>—</td><td><strong>No handler (405 by design)</strong></td></tr><tr><td>POST</td><td><code>/api/products</code></td><td>manager</td><td>Create product</td></tr><tr><td>PATCH/DELETE</td><td><code>/api/products/:id</code></td><td>manager</td><td>Update product (incl. <code>addonIds</code> replace) / delete</td></tr><tr><td>GET</td><td><code>/api/staff</code></td><td>manager</td><td>List staff (id/name/email/role/isActive)</td></tr><tr><td>POST</td><td><code>/api/staff</code></td><td>manager</td><td>Add staff (bcrypt password + generated 4-digit PIN)</td></tr><tr><td>GET</td><td><code>/api/customers</code></td><td>staff</td><td>Customer list</td></tr><tr><td>GET</td><td><code>/api/customers/find</code></td><td>staff</td><td><code>?phone=</code> lookup</td></tr><tr><td>POST</td><td><code>/api/customers/:id/redeem</code></td><td>staff</td><td>Redeem <code>{ points }</code> → <code>{ cashValue }</code></td></tr><tr><td>POST</td><td><code>/api/reviews</code></td><td>staff</td><td>Create review</td></tr><tr><td>GET</td><td><code>/api/tax-rates</code></td><td>manager</td><td>Tax rates</td></tr><tr><td>GET</td><td><code>/api/settings</code></td><td>admin+</td><td>Settings</td></tr><tr><td>GET/POST</td><td><code>/api/stock</code></td><td>manager</td><td>Inventory + stock movements</td></tr><tr><td>POST</td><td><code>/api/pos/tables/:id/open</code></td><td>staff</td><td>Open session (409 if occupied)</td></tr><tr><td>POST</td><td><code>/api/pos/sessions/:id/order</code></td><td>staff</td><td>Staff order → SENT_TO_KITCHEN (server hydrates product identity)</td></tr><tr><td>GET</td><td><code>/api/pos/sessions/:id/bill-detailed</code></td><td>staff</td><td>Bill detail + payments + taxLines + session tree</td></tr><tr><td>POST</td><td><code>/api/pos/sessions/:id/bill</code></td><td>staff</td><td>Generate/refresh bill (upsert on <code>sessionId</code>)</td></tr><tr><td>GET</td><td><code>/api/pos/kitchen/orders</code></td><td>staff</td><td>KDS feed (4 active statuses)</td></tr><tr><td>PATCH</td><td><code>/api/pos/orders/:id</code></td><td>staff</td><td>Advance status; stamps lifecycle timestamps</td></tr><tr><td>PATCH</td><td><code>/api/pos/orders/:id/items/:itemId</code></td><td>staff</td><td>Update item qty (clamped 1–99); 409 unless DRAFT/SENT_TO_KITCHEN/PREPARING</td></tr><tr><td>DELETE</td><td><code>/api/pos/orders/:id/items/:itemId</code></td><td>staff</td><td>Remove item; removing the last item cancels the order</td></tr><tr><td>POST</td><td><code>/api/pos/bills/:id/pay</code></td><td>staff</td><td>Record payment; settles → closes session + frees table + loyalty</td></tr><tr><td><strong>GET</strong></td><td><strong><code>/api/m/tables</code></strong></td><td><strong>public</strong></td><td>Open tables for guest checkout</td></tr><tr><td><strong>POST</strong></td><td><strong><code>/api/m/orders</code></strong></td><td><strong>public</strong></td><td>Guest order (tamper-safe, §10.3)</td></tr></tbody></table>
+<hr/>
+<h2>15. Conventions &amp; Recipes for Common Changes</h2>
+<h3>15.1 Add a new API route</h3>
+<ol>
+<li>Create <code>src/app/api/&lt;name&gt;/route.ts</code> (or <code>src/app/api/&lt;name&gt;/[id]/route.ts</code>).</li>
+<li>Use <code>apiAuth(...roles)</code> unless it is deliberately public (like the <code>/api/m/*</code> endpoints).</li>
+<li>Guarded by <code>params: Promise&lt;...&gt;</code> → <code>const { id } = await params;</code>.</li>
+<li><code>req.json().catch(() =&gt; ({}))</code> for body parsing; validate required fields; respond with <code>jsonError(msg, code)</code> on failure.</li>
+<li>Wrap DB work in <code>try/catch</code> returning <code>jsonError(e.message)</code>.</li>
+</ol>
+<h3>15.2 Add a new page (staff)</h3>
+<ol>
+<li>Create <code>src/app/(app)/&lt;name&gt;/page.tsx</code> — server component: <code>auth()</code> guard (the <code>(app)</code> layout already redirects, but pages that branch on role still call <code>auth()</code>), Prisma queries, <code>toPlain()</code> the payloads, render a <code>"use client"</code> component from <code>src/components/</code>.</li>
+<li>Register navigation in <code>src/config/nav.ts</code> (add <code>roles</code> to gate by role).</li>
+<li>If role-conditional UI is needed server-side, use <code>requireRole(...)</code> from <code>@/lib/session</code>.</li>
+</ol>
+<h3>15.3 Add a public/page-less path (guest)</h3>
+<ul>
+<li>Server page under <code>src/app/&lt;route&gt;/page.tsx</code> with <code>export const dynamic = "force-dynamic"</code>.</li>
+<li>Guest data endpoints under <code>src/app/api/m/*</code> and mark them explicitly public in §8.3 and §14.</li>
+</ul>
+<h3>15.4 Add/extend a database field</h3>
+<p>Follow §4.3 exactly (both schemas → push both → generate → seed both). Then: if it's a menu/UI-visible field, update the matching <code>toPlain()</code> consumer. <strong>Do not forget to run <code>npm run generate:pg</code> locally or the pg import will fail to typecheck</strong> (<code>vercel-build</code> does this automatically).</p>
+<h3>15.5 Styling</h3>
+<ul>
+<li>Shadcn-style primitives in <code>src/components/ui/*</code> (Button, Dialog, Input, Label, Select, Switch, Tabs, Badge, Card, Textarea, Toaster). Use those instead of hand-rolled DOM.</li>
+<li>Variant classes via <code>cn("bg-…", cond &amp;&amp; "…")</code> and inline <code>Record&lt;status, class&gt;</code> maps (see <code>statusStyle</code> in <code>table-grid.tsx</code>, <code>COLUMNS</code> in <code>kitchen-board.tsx</code>).</li>
+<li>Paper-like receipts, bottom sheets and the KDS use plain Tailwind with arbitrary values (<code>max-h-[85vh]</code>, <code>pb-[max(0.75rem,env(safe-area-inset-bottom))]</code>) — keep the safe-area padding on mobile.</li>
+</ul>
+<h3>15.6 Verifying changes</h3>
+<ol>
+<li><code>npm run build</code> (does type checking).</li>
+<li>Local: <code>npm run dev</code>, log in, exercise the touched flow.</li>
+<li>Against production DB locally: set <code>POSTGRES_URL</code> (session pooler, <code>:5432</code>) and run the same app (the QA harnesses in §16 do this through the real origin).</li>
+<li>Deploy: <code>npx vercel --prod --yes</code> <strong>from the project directory</strong>.</li>
+</ol>
+<hr/>
+<h2>16. QA &amp; Verification Harness</h2>
+<p>During the mobile-ordering work, browser QA was driven with <code>puppeteer-core</code> + the installed Chrome (<code>C:\Program Files\Google\Chrome\Application\chrome.exe</code>) from a scratch dir, against <code>$env:BASE</code> (<code>https://pos-cafe-eight.vercel.app</code>). Scripts live outside the repo in a temp workspace and use fetch-cookie login + real open-table flows; a <code>cleanup_t2.mjs</code> helper resets test table <code>T2</code> (closes OPEN sessions, sets AVAILABLE). Observations from that work:</p>
+<ul>
+<li>Always clean the test table between runs (an OPEN leftover session makes re-open return 409).</li>
+<li>Cold-start latency matters: wait for selectors rather than fixed sleeps; allow a few seconds after first request.</li>
+<li>Assert via <strong>accessible state</strong> (<code>aria-pressed</code>, rendered text, <code>disabled</code>) rather than pixel heuristics.</li>
+</ul>
+<hr/>
+<h2>17. Pitfalls &amp; Lessons Learned (read before changing anything)</h2>
+<ol>
+<li><strong><code>POSTGRES_URL</code> presence switches DB backends.</strong> Accidentally setting it locally changes everything; conversely, forgetting it on Vercel yields MySQL's client with no MySQL host → boot errors. It is the single most important env var.</li>
+<li><strong>Never deploy without regenerating the pg client</strong>: any schema drift breaks <code>src/generated/pg</code> typecheck in Vercel builds.</li>
+<li><strong>Prisma relation <code>where</code> on to-one includes is disallowed.</strong> You can filter <code>10</code> filters in the *include* only for to-many relations. Ordering logic that needs conditional to-one data must <code>findMany</code> then filter in JS (this shaped <code>/api/m/orders</code> addon handling).</li>
+<li><strong>Decimal/Date must pass through <code>toPlain</code></strong> before crossing the RSC→client boundary. Missing it throws a hard Next serialization error.</li>
+<li><strong>Vercel blocks Next &lt; 15.2.8</strong> (CVE-2025-66478). Never downgrade.</li>
+<li><strong><code>vercel</code> fights back if run from the wrong cwd</strong> (home directory → "deploying home directory"). Always <code>npx vercel --prod --yes</code> inside <code>POS_CAFE</code>.</li>
+<li><strong>Supabase legacy direct host is IPv6-only</strong> → use poolers: <code>:6543</code> (transaction) on Vercel, <code>:5432</code> (session) for scripts/push/seed.</li>
+<li><strong><code>/api/products</code> GET → 405 is intentional.</strong> Callers must use the category endpoint.</li>
+<li><strong>Money</strong>: <code>₹30.00</code> has no space after <code>₹</code>; string-matching UIs (e.g. add-on "+₹" chips) depend on this.</li>
+<li><strong>Mobile UX regression guard</strong>: item cards are full-tap <code>&lt;button&gt;</code>s; never reintroduce separately-disabled inner buttons without visible feedback, or "tap does nothing" returns (the exact bug that drove Round 2 of the mobile fix).</li>
+<li><strong>Status lifecycle</strong>: loans on <code>PATCH /api/pos/orders/:id</code> — CANCELLED and SERVED are final; transition validation lives in the route, keep it there.</li>
+<li><strong>Session/table consistency</strong>: session OPEN ⟷ table OCCUPIED must always be updated together (create/open in a single request; settle path uses a <code>$transaction</code>).</li>
+</ol>
+<hr/>
+<h2>18. Deployment &amp; Operations Quick Reference</h2>
+<pre><code># Install &amp; generate both clients
+npm install
+
+# Sync schema to both DBs (set POSTGRES_URL for the pg push)
+npm run db:push
+npm run db:push:pg
+
+# Seed both (POSTGRES_URL required for pg)
+npm run db:seed
+npm run db:seed:pg
+
+# Local
+npm run dev
+
+# Build check
+npm run build
+
+# Deploy production (must run from POS_CAFE dir)
+npx vercel --prod --yes</code></pre>
+<p><strong>Deployment URL:</strong> <code>https://pos-cafe-eight.vercel.app</code> (Vercel project <code>pos-cafe</code>). Verify a new deploy with the login flow (admin@poscafe.example / admin123), the Tables→Menu QR→table chip→Scan path, and the kitchen board.</p>
+</body></html>

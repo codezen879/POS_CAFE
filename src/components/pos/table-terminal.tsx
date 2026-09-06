@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { X, Plus, Minus, Send, ReceiptText, IndianRupee, Loader2, Trash2, ShoppingBag, ChefHat } from "lucide-react";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, timeAgo } from "@/lib/utils";
 import { useCart, type CartLine } from "@/store/cart";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -52,6 +52,7 @@ export function TableTerminal({
   const [addonSel, setAddonSel] = useState<Record<string, number>>({});
   const [sending, setSending] = useState(false);
   const [loadingBill, setLoadingBill] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const { lines, addItem, removeItem, updateQty, clearCart, setOrderId } = useCart();
 
@@ -63,7 +64,8 @@ export function TableTerminal({
       setView("order");
       clearCart();
     }
-  }, [table, menu, clearCart]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table?.id, clearCart]);
 
   const activeProducts: ProductType[] = useMemo(() => {
     const cat = menu.find((c) => c.id === activeCat);
@@ -135,6 +137,67 @@ export function TableTerminal({
     }
   }
 
+  const EDITABLE_STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "PREPARING"];
+
+  function isEditable(status: string) {
+    return EDITABLE_STATUSES.includes(status);
+  }
+
+  async function updateOrderItemQty(orderId: string, itemId: string, quantity: number) {
+    if (quantity < 1) return removeOrderItem(orderId, itemId);
+    setBusy(itemId);
+    try {
+      const res = await fetch(`/api/pos/orders/${orderId}/items/${itemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update item");
+      toast.success("Item updated");
+      onChanged();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeOrderItem(orderId: string, itemId: string) {
+    setBusy(itemId);
+    try {
+      const res = await fetch(`/api/pos/orders/${orderId}/items/${itemId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to remove item");
+      toast.success(data.orderCancelled ? "Order cancelled (no items left)" : "Item removed");
+      onChanged();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelOrder(orderId: string) {
+    if (!window.confirm("Cancel this entire order? This cannot be undone.")) return;
+    setBusy(orderId);
+    try {
+      const res = await fetch(`/api/pos/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "CANCELLED" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to cancel order");
+      toast.success("Order cancelled");
+      onChanged();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <Dialog open={!!table} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-6xl gap-0 p-0 sm:rounded-2xl">
@@ -168,22 +231,32 @@ export function TableTerminal({
 
         <div className="max-h-[70vh] overflow-y-auto">
           {view === "order" ? (
-            <div className="grid md:grid-cols-[1fr_340px]">
-              <OrderMenu
-                menu={menu}
-                activeCat={activeCat}
-                setActiveCat={setActiveCat}
-                activeProducts={activeProducts}
-                onPick={openAddonPicker}
-              />
-              <CartPanel
-                lines={lines}
-                cartTotal={cartTotal}
-                updateQty={updateQty}
-                removeItem={removeItem}
-                sending={sending}
-                onSend={sendToKitchen}
-                orderCount={sessionOrders.length}
+            <div>
+              <div className="grid md:grid-cols-[1fr_340px]">
+                <OrderMenu
+                  menu={menu}
+                  activeCat={activeCat}
+                  setActiveCat={setActiveCat}
+                  activeProducts={activeProducts}
+                  onPick={openAddonPicker}
+                />
+                <CartPanel
+                  lines={lines}
+                  cartTotal={cartTotal}
+                  updateQty={updateQty}
+                  removeItem={removeItem}
+                  sending={sending}
+                  onSend={sendToKitchen}
+                  orderCount={sessionOrders.length}
+                />
+              </div>
+              <PlacedOrders
+                orders={sessionOrders}
+                busy={busy}
+                isEditable={isEditable}
+                onUpdateQty={(orderId: string, itemId: string, quantity: number) => updateOrderItemQty(orderId, itemId, quantity)}
+                onRemoveItem={(orderId: string, itemId: string) => removeOrderItem(orderId, itemId)}
+                onCancel={cancelOrder}
               />
             </div>
           ) : (
@@ -343,6 +416,137 @@ function CartPanel({ lines, cartTotal, updateQty, removeItem, sending, onSend, o
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChefHat className="h-4 w-4" />}
           Send to kitchen
         </Button>
+      </div>
+    </div>
+  );
+}
+
+const ORDER_STATUS_STYLE: Record<string, string> = {
+  DRAFT: "bg-slate-100 text-slate-600",
+  SENT_TO_KITCHEN: "bg-sky-100 text-sky-700",
+  PREPARING: "bg-amber-100 text-amber-700",
+  READY: "bg-emerald-100 text-emerald-700",
+  PARTIALLY_SERVED: "bg-violet-100 text-violet-700",
+  SERVED: "bg-green-100 text-green-700",
+  CANCELLED: "bg-red-100 text-red-600",
+};
+
+function PlacedOrders({ orders, busy, isEditable, onUpdateQty, onRemoveItem, onCancel }: any) {
+  if (orders.length === 0) {
+    return (
+      <div className="border-t px-5 py-4">
+        <h3 className="font-semibold">Placed orders</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          No orders yet — send your cart to the kitchen and they will appear here with live status.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t px-5 py-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="font-semibold">Placed orders</h3>
+        <span className="text-xs text-muted-foreground">
+          {orders.length} order{orders.length > 1 ? "s" : ""}
+        </span>
+      </div>
+      <div className="space-y-3">
+        {orders.map((o: any) => {
+          const editable = isEditable(o.status);
+          const orderTotal = o.items.reduce(
+            (s: number, it: any) =>
+              s + (Number(it.unitPrice) + it.addons.reduce((x: number, a: any) => x + Number(a.price) * a.quantity, 0)) * it.quantity,
+            0
+          );
+          return (
+            <div key={o.id} className="rounded-xl border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold">{o.orderNumber}</span>
+                  <span className={cn("rounded-full px-2 py-0.5 text-[11px] capitalize", ORDER_STATUS_STYLE[o.status] ?? "bg-muted text-muted-foreground")}>
+                    {o.status.toLowerCase().replace(/_/g, " ")}
+                  </span>
+                  {o.placedAt && <span className="text-xs text-muted-foreground">{timeAgo(o.placedAt)}</span>}
+                </div>
+                {editable && (
+                  <button
+                    onClick={() => onCancel(o.id)}
+                    disabled={busy === o.id}
+                    className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    {busy === o.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              {o.note && <div className="mt-1 text-xs italic text-muted-foreground">{o.note}</div>}
+
+              <div className="mt-2 space-y-1">
+                {o.items.map((it: any) => (
+                  <div key={it.id} className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-sm">
+                    <div className="min-w-0">
+                      <div className="font-medium">
+                        {it.name} ×{it.quantity}
+                      </div>
+                      {it.addons.length > 0 && (
+                        <div className="text-[11px] text-muted-foreground">
+                          {it.addons.map((a: any) => `${a.name} ×${a.quantity}`).join(", ")}
+                        </div>
+                      )}
+                      {it.note && <div className="text-[11px] italic text-muted-foreground">{it.note}</div>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {editable && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => onUpdateQty(o.id, it.id, it.quantity - 1)}
+                            disabled={busy === it.id}
+                            className="rounded-md border p-1 disabled:opacity-50"
+                            aria-label={`Decrease ${it.name}`}
+                          >
+                            <Minus className="h-3 w-3" />
+                          </button>
+                          <span className="w-6 text-center text-xs">{it.quantity}</span>
+                          <button
+                            onClick={() => onUpdateQty(o.id, it.id, it.quantity + 1)}
+                            disabled={busy === it.id}
+                            className="rounded-md border p-1 disabled:opacity-50"
+                            aria-label={`Increase ${it.name}`}
+                          >
+                            <Plus className="h-3 w-3" />
+                          </button>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => onRemoveItem(o.id, it.id)}
+                        disabled={busy === it.id}
+                        className="text-muted-foreground hover:text-destructive disabled:opacity-50"
+                        aria-label={`Remove ${it.name}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="w-24 text-right text-xs font-semibold">
+                        {formatCurrency(
+                          (Number(it.unitPrice) + it.addons.reduce((x: number, a: any) => x + Number(a.price) * a.quantity, 0)) * it.quantity
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {!editable && (
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                  {o.status === "CANCELLED" ? "This order was cancelled." : "This order can no longer be edited."}
+                </div>
+              )}
+
+              <div className="mt-2 flex justify-end border-t pt-2 text-sm font-bold">{formatCurrency(orderTotal)}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import toast from "react-hot-toast";
@@ -36,6 +36,15 @@ export function TableGrid({ tables, menu, store, customers, isManager }: { table
   const [qrOpen, setQrOpen] = useState(false);
   const [qrSel, setQrSel] = useState<string>("menu");
   const [manageOpen, setManageOpen] = useState(false);
+
+  // Keep the open terminal in sync with server-refreshed props so order
+  // changes (send, edit, cancel, bill) appear live instead of showing a stale snapshot.
+  useEffect(() => {
+    if (!terminalTable?.id) return;
+    const fresh = tables.find((t) => t.id === terminalTable.id);
+    if (!fresh) setTerminalTable(null);
+    else if (fresh !== terminalTable) setTerminalTable(fresh);
+  }, [tables, terminalTable]);
 
   const occupiedCount = tables.filter((t) => t.status === "OCCUPIED").length;
   const openTables = tables.filter((t) => t.status === "OCCUPIED" && t.sessions[0]);
