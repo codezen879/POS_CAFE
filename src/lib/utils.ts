@@ -18,10 +18,12 @@ export function formatCurrency(amount: number | string | null | undefined, curre
   }
 }
 
+export const STORE_TIME_ZONE = "Asia/Kolkata";
+
 export function formatDate(date: Date | string | null | undefined) {
   if (!date) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: STORE_TIME_ZONE });
 }
 
 export function formatDateTime(date: Date | string | null | undefined) {
@@ -33,13 +35,14 @@ export function formatDateTime(date: Date | string | null | undefined) {
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: STORE_TIME_ZONE,
   });
 }
 
 export function formatTime(date: Date | string | null | undefined) {
   if (!date) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: STORE_TIME_ZONE });
 }
 
 export function timeAgo(date: Date | string | null | undefined) {
