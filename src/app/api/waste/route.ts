@@ -53,6 +53,7 @@ export async function POST(req: Request) {
   const user = await apiAuth("SUPER_ADMIN", "ADMIN", "MANAGER");
   if (user instanceof Response) return user;
   if (!user.storeId) return jsonError("Select a store before recording waste", 400);
+  const storeId = user.storeId;
 
   const body = await req.json().catch(() => ({}));
   const reasons = ["DEFECTIVE_FOOD", "NOT_STARTED", "SPILLAGE", "EXPIRED", "OTHER"];
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
     return await prisma.$transaction(async (tx) => {
       const record = await tx.wasteRecord.create({
         data: {
-          storeId: user.storeId,
+          storeId,
           source: "MANUAL",
           reason: reason as any,
           note,

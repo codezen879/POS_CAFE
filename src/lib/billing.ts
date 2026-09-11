@@ -46,7 +46,7 @@ export async function computeBillForSession(
       // A returned line may intentionally remain on the customer's bill. All
       // unserved, cancelled, pooled, and non-billable lines remain excluded.
       if (!isBillEligibleItem(item.status, item.billable)) continue;
-      const addonTotal = item.addons.reduce((s, a) => s + Number(a.price) * a.quantity, 0);
+      const addonTotal = item.addons.reduce((s: number, a: { price: string | number; quantity: number }) => s + Number(a.price) * a.quantity, 0);
       const lineBase = (Number(item.unitPrice) + addonTotal) * item.quantity;
       subtotal = round2(subtotal + lineBase);
       const rate = item.product?.taxRate?.rate ? Number(item.product.taxRate.rate) : 0;
