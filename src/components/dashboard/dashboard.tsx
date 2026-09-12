@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { IndianRupee, ShoppingBag, Users, CookingPot, AlertTriangle, TrendingUp } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, timeAgo } from "@/lib/utils";
+
+const Hero3D = dynamic(() => import("@/components/three/zen-scene"), { ssr: false });
 
 export function Dashboard(props: any) {
   const stats = [
@@ -17,14 +20,17 @@ export function Dashboard(props: any) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="relative flex items-center justify-between overflow-hidden rounded-xl border bg-card px-5 py-4">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <p className="text-sm text-muted-foreground">Today's performance at a glance.</p>
         </div>
-        <Link href="/tables" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
-          Open POS
-        </Link>
+        <div className="flex items-center gap-4">
+          <Hero3D variant="mug" interactive className="hidden h-24 w-24 sm:block md:h-28 md:w-28" />
+          <Link href="/tables" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">
+            Open POS
+          </Link>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

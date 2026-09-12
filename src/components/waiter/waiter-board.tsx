@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { toast } from "react-hot-toast";
 import {
   AlertCircle,
@@ -28,6 +29,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+
+const ZenAccent = dynamic(() => import("@/components/three/zen-scene"), { ssr: false });
 
 type ItemDisposition = "NONE" | "WASTE" | "READY_POOL" | "REUSE_OFFER_PENDING";
 type ReuseDecision = "USE" | "NEW";
@@ -484,29 +487,32 @@ export function WaiterBoard() {
   return (
     <div className="space-y-5">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-bold tracking-tight">Waiter</h1>
-            {readyLines > 0 && (
-              <Badge className="border-orange-600 bg-orange-500 text-white hover:bg-orange-500">
-                {readyLines} ready now
-              </Badge>
-            )}
-            {pendingOrders.length > 0 && (
-              <Badge className="border-amber-700 bg-amber-600 text-white hover:bg-amber-600">
-                {pendingOrders.length} ready-food decision{pendingOrders.length !== 1 ? "s" : ""}
-              </Badge>
+        <div className="flex items-start gap-3">
+          <ZenAccent variant="beans" className="hidden h-11 w-11 shrink-0 sm:block" />
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-bold tracking-tight">Waiter</h1>
+              {readyLines > 0 && (
+                <Badge className="border-orange-600 bg-orange-500 text-white hover:bg-orange-500">
+                  {readyLines} ready now
+                </Badge>
+              )}
+              {pendingOrders.length > 0 && (
+                <Badge className="border-amber-700 bg-amber-600 text-white hover:bg-amber-600">
+                  {pendingOrders.length} ready-food decision{pendingOrders.length !== 1 ? "s" : ""}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {activeLines} active line{activeLines !== 1 ? "s" : ""} across {activeTables} table
+              {activeTables !== 1 ? "s" : ""} · quantities move together · auto-refresh every 5 seconds
+            </p>
+            {lastUpdated && (
+              <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                <Clock3 className="h-3.5 w-3.5" /> Last synced {formatTime(lastUpdated)}
+              </p>
             )}
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {activeLines} active line{activeLines !== 1 ? "s" : ""} across {activeTables} table
-            {activeTables !== 1 ? "s" : ""} · quantities move together · auto-refresh every 5 seconds
-          </p>
-          {lastUpdated && (
-            <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-              <Clock3 className="h-3.5 w-3.5" /> Last synced {formatTime(lastUpdated)}
-            </p>
-          )}
         </div>
         <Button
           type="button"

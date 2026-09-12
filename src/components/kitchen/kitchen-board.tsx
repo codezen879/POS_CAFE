@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { AlertTriangle, Clock3, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatTime } from "@/lib/utils";
 import { REUSE_OFFER_PENDING } from "@/lib/ready-pool";
+
+const ZenAccent = dynamic(() => import("@/components/three/zen-scene"), { ssr: false });
 
 type QueueItem = {
   id: string;
@@ -185,12 +188,15 @@ export function KitchenBoard() {
   return (
     <div className="space-y-4" aria-busy={refreshing}>
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Kitchen Display</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {foodToMake.length} to make · {readyFood.length} ready
-            {priorityCount > 0 ? ` · ${priorityCount} priority` : ""}
-          </p>
+        <div className="flex items-start gap-3">
+          <ZenAccent variant="beans" className="hidden h-12 w-12 shrink-0 sm:block" />
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Kitchen Display</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {foodToMake.length} to make · {readyFood.length} ready
+              {priorityCount > 0 ? ` · ${priorityCount} priority` : ""}
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-3 sm:justify-end">
