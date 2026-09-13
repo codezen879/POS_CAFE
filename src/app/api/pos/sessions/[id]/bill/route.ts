@@ -139,9 +139,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
                 customer: true,
                 orders: {
                   where: { status: { not: "DRAFT" } },
+                  orderBy: [{ placedAt: "asc" }, { id: "asc" }],
                   include: {
                     items: {
                       where: { status: { in: ["SERVED", "RETURNED"] }, billable: true },
+                      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
                       include: { addons: true },
                     },
                   },

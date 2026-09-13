@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Printer, CheckCircle2, Banknote, QrCode, CreditCard, Tag, Star, Gift } from "lucide-react";
+import { Loader2, Printer, CheckCircle2, Banknote, QrCode, CreditCard, Star, Gift } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Receipt } from "./receipt";
+import { printReceipt, Receipt } from "./receipt";
 import toast from "react-hot-toast";
-import { useRouter } from "next/navigation";
 
 type BillType = {
   id: string;
@@ -21,22 +20,26 @@ type BillType = {
   discountAmount: number;
   taxTotal: number;
   serviceCharge: number;
+  roundOff?: number;
   total: number;
   paidAmount: number;
   dueAmount: number;
+  issuedAt?: string | null;
+  paidAt?: string | null;
+  createdAt?: string | null;
   taxLines: { taxCode: string; rate: number; baseAmount: number; taxAmount: number }[];
   payments: any[];
   session?: {
     sessionNumber: string;
+    guestCount?: number;
     customerId?: string | null;
     table?: { tableName: string } | null;
     customer?: { name: string | null; phone: string | null; loyaltyPoints: number } | null;
-    orders?: { orderNumber: string; items: { name: string; unitPrice: number; quantity: number; addons: { name: string; price: number; quantity: number }[] }[] }[];
+    orders?: { orderNumber: string; placedAt?: string | null; items: { name: string; unitPrice: number; quantity: number; note?: string | null; addons: { name: string; price: number; quantity: number }[] }[] }[];
   };
 };
 
 export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: string; store: any; onChanged: () => void; onClose: () => void }) {
-  const router = useRouter();
   const [bill, setBill] = useState<BillType | null>(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -171,10 +174,18 @@ export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: 
   }
 
   const settled = bill?.status === "PAID";
+  const currency = store?.currency || "INR";
+  const money = (value: number) => formatCurrency(value, currency);
+  const applyRedemption = (value: number) => {
+    setDiscountType("FIXED");
+    setDiscountValue(value);
+    setRedeemOpen(false);
+    toast.success(`₹${value} discount set`);
+  };
 
   if (!bill) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 p-10">
+      <div className="flex flex-col items-center justify-center gap-4 p-6 sm:p-10">
         <div className="text-center">
           <div className="text-lg font-semibold">Generate Bill</div>
           <p className="text-sm text-muted-foreground">Compute the final bill for this session including GST.</p>
@@ -215,23 +226,25 @@ export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: 
           </div>
         </div>
 
-        <Button onClick={generateBill} disabled={generating}>
+        <Button className="min-h-11 w-full max-w-sm" onClick={generateBill} disabled={generating}>
           {generating && <Loader2 className="h-4 w-4 animate-spin" />}
           Generate bill
         </Button>
+        <RedeemDialog open={redeemOpen} onOpenChange={setRedeemOpen} onApplied={applyRedemption} />
       </div>
     );
   }
 
   if (showReceipt) {
     return (
-      <div className="p-8">
+      <div className="p-3 sm:p-8">
         <Receipt bill={bill} store={store} onDone={() => { setShowReceipt(false); onChanged(); }} />
         <div className="mx-auto mt-4 max-w-sm">
           <Button variant="outline" className="w-full" onClick={() => setReviewOpen(true)}>
             <Star className="h-4 w-4" /> This table left a review?
           </Button>
         </div>
+        <ReviewDialog open={reviewOpen} onOpenChange={setReviewOpen} customerId={bill.session?.customerId} />
       </div>
     );
   }
@@ -255,9 +268,11 @@ export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: 
 
   const methodButton = (m: string, label: string, Icon: any) => (
     <button
+      type="button"
       key={m}
       onClick={() => setMethod(m)}
-      className={`flex flex-col items-center gap-1 rounded-lg border p-3 text-xs font-medium transition-colors ${method === m ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent"}`}
+      aria-pressed={method === m}
+      className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border p-3 text-xs font-medium transition-colors ${method === m ? "border-primary bg-primary/10 text-primary ring-2 ring-primary/15" : "text-muted-foreground hover:bg-accent"}`}
     >
       <Icon className="h-5 w-5" />
       {label}
@@ -265,51 +280,49 @@ export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: 
   );
 
   return (
-    <div className="grid gap-6 p-6 md:grid-cols-2">
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold">Bill {bill.billNumber}</h3>
-          <span className="rounded-full bg-secondary px-2 py-0.5 text-xs capitalize">{bill.status.toLowerCase()}</span>
-        </div>
-        <div className="rounded-lg border">
-          {[
-            ["Subtotal", bill.subtotal],
-            ["Discount", -bill.discountAmount],
-            ["Service charge", bill.serviceCharge],
-            ...(bill.taxLines.length ? bill.taxLines.map((t) => [`${t.taxCode} (${t.rate}%)`, t.taxAmount] as [string, number]) : []),
-          ].map(([label, value]) => (
-            <div key={label as string} className="flex items-center justify-between border-b px-4 py-2 last:border-0 text-sm">
-              <span className="text-muted-foreground">{label}</span>
-              <span className={Number(value) < 0 ? "text-destructive" : ""}>{formatCurrency(Number(value))}</span>
-            </div>
-          ))}
-          <div className="flex items-center justify-between px-4 py-3 text-base font-bold">
-            <span>Total</span>
-            <span>{formatCurrency(bill.total)}</span>
-          </div>
-        </div>
-        {settled && (
-          <div className="flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-emerald-700">
-            <CheckCircle2 className="h-5 w-5" /> Paid in full
-          </div>
-        )}
+    <div className="grid items-start gap-5 p-3 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+      <div className="min-w-0">
+        <Receipt bill={bill} store={store} showActions={false} />
       </div>
 
-      <div className="space-y-4">
-        <div>
-          <Label>Payment method</Label>
-          <div className="mt-2 grid grid-cols-4 gap-2">
-            {methodButton("CASH", "Cash", Banknote)}
-            {methodButton("UPI", "UPI", QrCode)}
-            {methodButton("CARD", "Card", CreditCard)}
-            {methodButton("SPLIT", "Split", Banknote)}
+      <aside className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm sm:p-5 lg:sticky lg:top-0" aria-label="Payment controls">
+        <div className="flex items-start justify-between gap-3 border-b pb-4">
+          <div>
+            <h3 className="font-bold">Payment</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">Bill {bill.billNumber}</p>
           </div>
+          <span className="rounded-full bg-secondary px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide">
+            {bill.status.replaceAll("_", " ")}
+          </span>
         </div>
 
-        {!settled && (
+        {settled ? (
+          <div className="flex items-center gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4 text-emerald-800">
+            <CheckCircle2 className="h-6 w-6 shrink-0" />
+            <div>
+              <div className="font-bold">Paid in full</div>
+              <div className="text-xs">Received {money(Number(bill.paidAmount))}</div>
+            </div>
+          </div>
+        ) : (
           <>
+            <div className="rounded-xl bg-primary/5 p-4 text-center">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Balance due</div>
+              <div className="mt-1 text-3xl font-black tracking-tight text-primary">{money(Number(bill.dueAmount))}</div>
+            </div>
+
+            <div>
+              <Label>Payment method</Label>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
+                {methodButton("CASH", "Cash", Banknote)}
+                {methodButton("UPI", "UPI", QrCode)}
+                {methodButton("CARD", "Card", CreditCard)}
+                {methodButton("SPLIT", "Split", Banknote)}
+              </div>
+            </div>
+
             <div className="space-y-2">
-              <Label>Amount</Label>
+              <Label>Amount to receive</Label>
               <Input
                 type="number"
                 min={0.01}
@@ -320,38 +333,31 @@ export function BillView({ sessionId, store, onChanged, onClose }: { sessionId: 
                 onChange={(e) => setAmount(Number(e.target.value))}
               />
             </div>
-            <Button className="w-full" size="lg" onClick={pay} disabled={paying || amount <= 0 || amount > bill.dueAmount}>
+            <Button className="min-h-12 w-full text-base" size="lg" onClick={pay} disabled={paying || amount <= 0 || amount > Number(bill.dueAmount)}>
               {paying && <Loader2 className="h-4 w-4 animate-spin" />}
-              Receive {formatCurrency(amount)}
+              Receive {money(amount)}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              Due: {formatCurrency(bill.dueAmount)} · Supports split payments
+              Split payments are supported. The bill updates after every payment.
             </p>
           </>
         )}
 
-        {settled && (
-          <Button className="w-full" onClick={() => setShowReceipt(true)}>
-            <Printer className="h-4 w-4" /> Print receipt
-          </Button>
-        )}
+        <Button variant="outline" className="min-h-11 w-full" onClick={() => printReceipt(bill, store)}>
+          <Printer className="h-4 w-4" /> {settled ? "Print receipt" : "Print bill"}
+        </Button>
 
         {settled && (
-          <Button variant="outline" className="w-full" onClick={() => { onChanged(); router.push("/"); }}>
+          <Button className="min-h-11 w-full" onClick={() => { onChanged(); onClose(); }}>
             Close & finish
           </Button>
         )}
-      </div>
+      </aside>
 
       <RedeemDialog
         open={redeemOpen}
         onOpenChange={setRedeemOpen}
-        onApplied={(value) => {
-          setDiscountType("FIXED");
-          setDiscountValue(value);
-          setRedeemOpen(false);
-          toast.success(`₹${value} discount set`);
-        }}
+        onApplied={applyRedemption}
       />
       <ReviewDialog open={reviewOpen} onOpenChange={setReviewOpen} customerId={bill.session?.customerId} />
     </div>

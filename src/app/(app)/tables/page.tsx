@@ -9,6 +9,7 @@ export default async function TablesPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
   const isManager = ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(session.user.role);
+  const storeId = session.user.storeId;
 
   const [tables, menu, store, customers] = await Promise.all([
     prisma.diningTable.findMany({
@@ -45,7 +46,9 @@ export default async function TablesPage() {
         },
       },
     }),
-    prisma.store.findFirst({ include: { taxRates: true } }),
+    storeId
+      ? prisma.store.findUnique({ where: { id: storeId }, include: { taxRates: true } })
+      : prisma.store.findFirst({ include: { taxRates: true } }),
     prisma.customer.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
   ]);
 

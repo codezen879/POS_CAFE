@@ -109,7 +109,7 @@ export function BillingList({ bills, store }: any) {
       </div>
 
       <Dialog open={!!viewBill} onOpenChange={(o) => { if (!o) { setViewBill(null); setDetail(null); } }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center justify-between">
               <span>Bill {viewBill?.billNumber}</span>
