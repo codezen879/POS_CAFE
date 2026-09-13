@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { apiAuth } from "@/lib/api";
 import { jsonError } from "@/lib/utils";
+import { postStoreMovement, StoreStockError } from "@/lib/inventory/stock";
 
 class WasteRequestError extends Error {
   constructor(message: string, readonly status = 409) {
@@ -11,6 +12,8 @@ class WasteRequestError extends Error {
 export async function GET(req: Request) {
   const user = await apiAuth();
   if (user instanceof Response) return user;
+  if (!user.storeId) return jsonError("Select a store before viewing waste", 400);
+  const storeId = user.storeId;
 
   const url = new URL(req.url);
   const reason = url.searchParams.get("reason") || undefined;
@@ -22,9 +25,9 @@ export async function GET(req: Request) {
   try {
     const records = await prisma.wasteRecord.findMany({
       where: {
+        storeId,
         reason: reason as any,
         source,
-        ...(user.storeId ? { storeId: user.storeId } : {}),
         ...(from || to
           ? {
               recordedAt: {
@@ -88,7 +91,13 @@ export async function POST(req: Request) {
     const ingredientId = String(raw?.ingredientId || "").trim();
     const requestedQty = Number(raw?.quantity);
     const quantity = Number.isFinite(requestedQty) ? Math.round(requestedQty * 1000) / 1000 : 0;
-    if (!ingredientId || ingredientId.length > 191 || quantity <= 0) {
+    if (
+      !ingredientId ||
+      ingredientId.length > 191 ||
+      !Number.isFinite(requestedQty) ||
+      requestedQty < 0.001 ||
+      Math.abs(requestedQty - quantity) > 1e-9
+    ) {
       return jsonError("Every ingredient needs a valid positive quantity", 400);
     }
     requestedIngredients.set(
@@ -114,35 +123,26 @@ export async function POST(req: Request) {
 
       const movements: any[] = [];
       let ingredientTotalCost = 0;
-      for (const [ingredientId, qty] of requestedIngredients) {
-        const ingredient = await tx.ingredient.findUnique({ where: { id: ingredientId } });
-        if (!ingredient) throw new WasteRequestError("A selected ingredient no longer exists", 400);
-        const available = Math.max(0, Number(ingredient.stockQty));
-        if (available < qty) {
-          throw new WasteRequestError(
-            `${ingredient.name} has only ${available} available; ${qty} was requested`
-          );
-        }
-        const claimed = await tx.ingredient.updateMany({
-          where: { id: ingredient.id, stockQty: { gte: qty } },
-          data: { stockQty: { decrement: qty } },
+      const ingredientEntries = [...requestedIngredients.entries()].sort(([left], [right]) =>
+        left.localeCompare(right)
+      );
+      for (const [ingredientId, qty] of ingredientEntries) {
+        const posted = await postStoreMovement(tx, {
+          storeId,
+          ingredientId,
+          quantityDelta: -qty,
+          type: "WASTAGE",
+          wasteRecordId: record.id,
+          note: note ?? "Manual waste entry",
+          insufficientPolicy: "REJECT",
         });
-        if (claimed.count !== 1) {
-          throw new WasteRequestError(`${ingredient.name} stock changed. Refresh and try again.`);
+        if (!posted.movement) {
+          throw new WasteRequestError("No ingredient stock was written off", 409);
         }
-        const unitCost = ingredient.costPerUnit != null ? Number(ingredient.costPerUnit) : null;
-        const mv = await tx.stockMovement.create({
-          data: {
-            ingredientId: ingredient.id,
-            type: "WASTAGE",
-            quantity: qty,
-            unitCost,
-            wasteRecordId: record.id,
-            note: note ?? "Manual waste entry",
-          },
-        });
-        movements.push(mv);
-        if (unitCost !== null) ingredientTotalCost += qty * unitCost;
+        movements.push(posted.movement);
+        if (posted.movement.unitCost != null) {
+          ingredientTotalCost += Math.abs(posted.actualDelta) * Number(posted.movement.unitCost);
+        }
       }
 
       if (wasteItems.length === 0 && movements.length === 0) {
@@ -161,6 +161,7 @@ export async function POST(req: Request) {
       return Response.json({ record: savedRecord, movements });
     }, { isolationLevel: "Serializable" });
   } catch (error: any) {
+    if (error instanceof StoreStockError) return jsonError(error.message, error.status);
     if (error instanceof WasteRequestError) return jsonError(error.message, error.status);
     if (error?.code === "P2034") {
       return jsonError("Stock changed while waste was recorded. Refresh and try again.", 409);

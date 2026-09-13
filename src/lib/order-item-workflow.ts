@@ -1,3 +1,5 @@
+import { ensureStoreIngredient, postStoreMovement } from "@/lib/inventory/stock";
+
 const ORDERED_ITEM_STATUSES = new Set(["ORDERED", "IN_PROCESS"]);
 const ACTIVE_ITEM_STATUSES = new Set(["ORDERED", "IN_PROCESS", "READY"]);
 const TERMINAL_ITEM_STATUSES = new Set([
@@ -103,9 +105,35 @@ export async function recordWasteForOrderItem(
   const storeId = item.order.session?.storeId;
   if (!storeId) throw new Error("Cannot record waste without a store session");
 
+  const usage = new Map<string, { qty: number; ingredient: any }>();
+
+  for (const recipeLine of item.product?.recipe ?? []) {
+    const aggregate = usage.get(recipeLine.ingredientId) ?? { qty: 0, ingredient: recipeLine.ingredient };
+    aggregate.qty += Number(recipeLine.qtyUsed) * item.quantity;
+    usage.set(recipeLine.ingredientId, aggregate);
+  }
+  const usageEntries = [...usage.entries()].sort(([left], [right]) =>
+    left.localeCompare(right)
+  );
+
+  const storeCosts = new Map<string, number>();
+  if (!input.trackingOnly) {
+    for (const [ingredientId, aggregate] of usageEntries) {
+      const requestedQty = Math.round(aggregate.qty * 1000) / 1000;
+      if (requestedQty <= 0) continue;
+      const storeIngredient = await ensureStoreIngredient(tx, { storeId, ingredientId });
+      storeCosts.set(
+        ingredientId,
+        Number(storeIngredient.costPerUnit ?? storeIngredient.ingredient.costPerUnit ?? 0)
+      );
+    }
+  }
+
   const recipeUnitCost = (item.product?.recipe ?? []).reduce(
     (sum: number, recipeLine: any) =>
-      sum + Number(recipeLine.qtyUsed) * Number(recipeLine.ingredient.costPerUnit ?? 0),
+      sum + Number(recipeLine.qtyUsed) * (
+        storeCosts.get(recipeLine.ingredientId) ?? Number(recipeLine.ingredient.costPerUnit ?? 0)
+      ),
     0
   );
   const unitCost = item.product?.costPrice != null
@@ -114,47 +142,12 @@ export async function recordWasteForOrderItem(
       ? recipeUnitCost
       : Number(item.unitPrice);
   const lineCost = input.trackingOnly ? 0 : Math.round(unitCost * item.quantity * 100) / 100;
-  const usage = new Map<string, { qty: number; ingredient: any }>();
-
-  for (const recipeLine of item.product?.recipe ?? []) {
-    const aggregate = usage.get(recipeLine.ingredientId) ?? { qty: 0, ingredient: recipeLine.ingredient };
-    aggregate.qty += Number(recipeLine.qtyUsed) * item.quantity;
-    usage.set(recipeLine.ingredientId, aggregate);
-  }
 
   const reason = wasteReason(input.reason);
   const recordNote = [input.note, input.reason && reason === "OTHER" ? `Reason: ${input.reason}` : null]
     .filter(Boolean)
     .join(" · ")
     .slice(0, 191) || null;
-  const movements: {
-    ingredientId: string;
-    type: "WASTAGE";
-    quantity: number;
-    unitCost: number | null;
-    note: string;
-  }[] = [];
-
-  if (!input.trackingOnly) {
-    for (const { qty, ingredient } of usage.values()) {
-      const deduct = Math.round(Math.min(qty, Math.max(0, Number(ingredient.stockQty))) * 1000) / 1000;
-      if (deduct <= 0) continue;
-      const claimed = await tx.ingredient.updateMany({
-        where: { id: ingredient.id, stockQty: { gte: deduct } },
-        data: { stockQty: { decrement: deduct } },
-      });
-      if (claimed.count === 1) {
-        movements.push({
-          ingredientId: ingredient.id,
-          type: "WASTAGE",
-          quantity: deduct,
-          unitCost: ingredient.costPerUnit != null ? Number(ingredient.costPerUnit) : null,
-          note: `Waste from ${item.order.orderNumber} (${item.name})`,
-        });
-      }
-    }
-  }
-
   const waste = await tx.wasteRecord.create({
     data: {
       storeId,
@@ -176,12 +169,30 @@ export async function recordWasteForOrderItem(
           billable: item.billable,
         },
       },
-      movements: movements.length ? { create: movements } : undefined,
     },
-    include: { items: true, movements: true },
+    include: { items: true },
   });
 
-  return waste;
+  if (!input.trackingOnly) {
+    for (const [ingredientId, aggregate] of usageEntries) {
+      const requestedQty = Math.round(aggregate.qty * 1000) / 1000;
+      if (requestedQty <= 0) continue;
+      await postStoreMovement(tx, {
+        storeId,
+        ingredientId,
+        quantityDelta: -requestedQty,
+        type: "WASTAGE",
+        wasteRecordId: waste.id,
+        note: `Waste from ${item.order.orderNumber} (${item.name})`.slice(0, 191),
+        insufficientPolicy: "CLAMP",
+      });
+    }
+  }
+
+  return tx.wasteRecord.findUniqueOrThrow({
+    where: { id: waste.id },
+    include: { items: true, movements: true },
+  });
 }
 
 /** Derives the coarse order state exclusively from its dish-line states. */

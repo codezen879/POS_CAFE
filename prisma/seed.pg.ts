@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/pg";
 import { hash } from "bcryptjs";
+import { createHash } from "node:crypto";
 
 const url = process.env.POSTGRES_URL;
 if (!url) {
@@ -12,6 +13,14 @@ if (!url) {
 const pool = new Pool({ connectionString: url });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
+
+function seededOpeningMovementId(storeId: string, ingredientId: string) {
+  const digest = createHash("sha256")
+    .update(`store-inventory-seed-opening:v1:${storeId}:${ingredientId}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `stk_open_${digest}`;
+}
 
 async function main() {
   console.log("Seeding POS Cafe (Postgres / Supabase)...");
@@ -227,7 +236,7 @@ async function main() {
   }
 
   // --- Suppliers & ingredients ---
-  await prisma.supplier.upsert({
+  const supplier = await prisma.supplier.upsert({
     where: { id: "supplier-1" },
     update: {},
     create: { id: "supplier-1", name: "Coffee Bean Co.", phone: "+91 90000 00001", contact: "Vendor" },
@@ -240,13 +249,52 @@ async function main() {
     { name: "Wheat Bread", unit: "pcs", stock: 60, reorder: 20 },
   ];
   for (const i of ingredients) {
-    await prisma.ingredient.upsert({
-      where: { id: `ing-${i.name.replace(/\s/g, "")}` },
-      update: { stockQty: i.stock, reorderLevel: i.reorder },
+    const ingredientId = `ing-${i.name.replace(/\s/g, "")}`;
+    const ingredient = await prisma.ingredient.upsert({
+      where: { id: ingredientId },
+      // Legacy stock/config fields remain for rollback, but a seed rerun must
+      // never reset a live outlet balance.
+      update: { name: i.name, unit: i.unit },
       create: {
-        id: `ing-${i.name.replace(/\s/g, "")}`, name: i.name, unit: i.unit,
-        stockQty: i.stock, reorderLevel: i.reorder, supplierId: "supplier-1",
+        id: ingredientId, name: i.name, unit: i.unit,
+        stockQty: i.stock, reorderLevel: i.reorder, supplierId: supplier.id,
       },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.storeIngredient.findUnique({
+        where: {
+          storeId_ingredientId: {
+            storeId: store.id,
+            ingredientId: ingredient.id,
+          },
+        },
+      });
+      if (existing) return;
+
+      const storeIngredient = await tx.storeIngredient.create({
+        data: {
+          storeId: store.id,
+          ingredientId: ingredient.id,
+          stockQty: i.stock,
+          reorderLevel: i.reorder,
+          costPerUnit: ingredient.costPerUnit,
+          preferredSupplierId: supplier.id,
+        },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          id: seededOpeningMovementId(store.id, ingredient.id),
+          storeId: store.id,
+          storeIngredientId: storeIngredient.id,
+          ingredientId: ingredient.id,
+          type: "STOCKTAKE",
+          quantity: i.stock,
+          unitCost: ingredient.costPerUnit,
+          note: "Seeded opening stock balance",
+        },
+      });
     });
   }
 

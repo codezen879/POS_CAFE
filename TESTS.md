@@ -409,30 +409,46 @@ Comprehensive functional, UI, UX, and security test cases for the POS Cafe webap
 # SECTION 10 — INVENTORY
 
 ### INV-001 Adjust stock IN
-**Steps:** Inventory → Adjust → type IN → quantity → note.
-**Expected:** StockMovement PURCHASE/IN recorded; ingredient stock increases; toast "Stock updated".
+**Steps:** Sign in to an outlet-assigned manager account → Inventory → Adjust → Receive → quantity → optional reason.
+**Expected:** A positive `PURCHASE` movement is recorded for that outlet, its `StoreIngredient.stockQty` increases, the catalogue-level legacy quantity is unchanged, and the toast says "Stock received".
 
 ### INV-002 Adjust stock OUT
-**Steps:** Adjust → OUT → quantity.
-**Expected:** Consumption/adjustment recorded; stock decreases; cannot go below 0 (guard).
+**Steps:** Adjust → Issue → quantity → required reason.
+**Expected:** A negative `ADJUSTMENT` movement is recorded for that outlet and its stock decreases. The request is rejected when the reason is empty.
 
 ### INV-003 Out-of-stock / below-zero
-**Steps:** Attempt OUT beyond current stock.
-**Expected:** Rejected or clamped to 0; no negative stock.
+**Steps:** Attempt to issue more than the selected outlet currently holds.
+**Expected:** Rejected with the available quantity; neither the balance nor movement ledger changes and stock never becomes negative.
 
 ### INV-004 Quantity validation
-**Steps:** Enter non-numeric / 0.
-**Expected:** Toast "Enter a quantity"; no movement.
+**Steps:** Try blank, non-numeric, zero, negative, more than three decimal places, and an amount above the database limit.
+**Expected:** A clear validation message appears and no movement is created.
 
-### INV-005 Stock decrement on order (if auto-deduct enabled)
-**Steps:** Place an order for an item linked to inventory.
-**Expected:** Ingredient stock decremented by recipe/consumption (or documented as manual-only). Verify documented behavior.
+### INV-005 Outlet isolation
+**Steps:** Receive stock for an ingredient in outlet A. Sign in to an account assigned to outlet B and open Inventory and Waste.
+**Expected:** Outlet B does not see outlet A's balance, movements, waste records, or waste totals. Its balance stays at its own value (zero for a newly initialized outlet).
 
-### INV-006 Zero-qty order handling
-**Steps:** Order item whose ingredient has 0 stock.
-**Expected:** Defined behavior (block vs allow); consistent message.
+### INV-006 Legacy inventory cutover
+**Steps:** On a database copy, run the prepared store-inventory migration once and compare the old ingredient balances/history with `store-main`.
+**Expected:** Every legacy balance and movement belongs to `store-main`; every other existing outlet starts at zero; the normalized movement ledger reconciles exactly to each `store-main` balance.
 
-### INV-007 Supplier list
+### INV-007 Waste write-off isolation
+**Steps:** Record ingredient waste in outlet A, then inspect that ingredient and the waste ledger in outlets A and B.
+**Expected:** Only outlet A stock decreases and receives the negative `WASTAGE` movement. Outlet B is unchanged. A waste record from another outlet cannot be updated by ID.
+
+### INV-008 Concurrent and repeated adjustments
+**Steps:** Submit the same adjustment twice with one request key, then submit two different issue requests concurrently near the available balance.
+**Expected:** The repeated request is replayed once, not double-counted. Concurrent requests serialize safely; an invalid loser gets a conflict/insufficient-stock response and no orphan movement.
+
+### INV-009 Unassigned outlet guard
+**Steps:** Use an authenticated manager account with no `storeId` and open Inventory/Waste or call their write endpoints.
+**Expected:** A friendly "Select an outlet" message is shown; no cross-outlet data is returned or changed.
+
+### INV-010 Stock decrement on order (future milestone)
+**Steps:** Place a normal order for an item linked to a recipe.
+**Expected:** Normal sale consumption remains manual/not enabled yet. Defect and waste flows do deduct the recipe from the order's outlet.
+
+### INV-011 Supplier list
 **Steps:** Inventory → view suppliers.
 **Expected:** Suppliers listed/readable; manage if supported.
 

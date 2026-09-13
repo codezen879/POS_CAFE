@@ -6,6 +6,7 @@ import { Dashboard } from "@/components/dashboard/dashboard";
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+  const storeId = session.user.storeId;
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -38,11 +39,18 @@ export default async function DashboardPage() {
       take: 8,
       include: { items: true, session: { include: { table: true } } },
     }),
-    prisma.ingredient.findMany({
-      where: { stockQty: { lte: prisma.ingredient.fields.reorderLevel } },
-      orderBy: { stockQty: "asc" },
-      take: 6,
-    }),
+    storeId
+      ? prisma.storeIngredient.findMany({
+          where: {
+            storeId,
+            isActive: true,
+            stockQty: { lte: prisma.storeIngredient.fields.reorderLevel },
+          },
+          orderBy: { stockQty: "asc" },
+          take: 6,
+          include: { ingredient: { select: { id: true, name: true, unit: true } } },
+        })
+      : Promise.resolve([]),
     prisma.orderItem.groupBy({
       by: ["name"],
       _sum: { quantity: true },
@@ -70,9 +78,9 @@ export default async function DashboardPage() {
         session: { table: o.session?.table ? { tableName: o.session.table.tableName } : null },
       })) as any}
       lowStock={lowStock.map((i: any) => ({
-        id: i.id,
-        name: i.name,
-        unit: i.unit,
+        id: i.ingredient.id,
+        name: i.ingredient.name,
+        unit: i.ingredient.unit,
         stockQty: Number(i.stockQty),
         reorderLevel: Number(i.reorderLevel),
       })) as any}

@@ -13,6 +13,8 @@
     "db:push": "prisma db push",
     "db:push:pg": "prisma db push --schema prisma/schema.postgres.prisma",
     "db:deploy:waiter-workflow:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260909190000_waiter_kitchen_workflow/migration.sql",
+    "db:deploy:store-inventory:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260913120000_store_inventory_isolation/migration.sql",
+    "db:deploy:store-inventory:mysql": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations-mysql/20260913120000_store_inventory_isolation/migration.sql",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:pg": "tsx prisma/seed.pg.ts",
     "db:studio": "prisma studio"

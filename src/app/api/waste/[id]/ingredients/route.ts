@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { apiAuth } from "@/lib/api";
 import { jsonError } from "@/lib/utils";
+import { postStoreMovement, StoreStockError } from "@/lib/inventory/stock";
 
 const MAX_QTY = 9_999_999.999;
 const MAX_MONEY = 99_999_999.99;
@@ -12,9 +13,9 @@ class WasteIngredientError extends Error {
   }
 }
 
-function movementIdFor(idempotencyKey: string) {
+function movementIdFor(storeId: string, idempotencyKey: string) {
   const digest = createHash("sha256")
-    .update(`waste-ingredient:v1:${idempotencyKey}`)
+    .update(`waste-ingredient:v2:${storeId}:${idempotencyKey}`)
     .digest("hex");
   return `wi_${digest}`;
 }
@@ -30,24 +31,28 @@ function round2(value: number) {
 
 function matchesRequest(
   movement: {
+    storeId: string;
     ingredientId: string;
     wasteRecordId: string | null;
     quantity: unknown;
     type: unknown;
   },
-  input: { recordId: string; ingredientId: string; quantity: number }
+  input: { storeId: string; recordId: string; ingredientId: string; quantity: number }
 ) {
   return (
+    movement.storeId === input.storeId &&
     movement.wasteRecordId === input.recordId &&
     movement.ingredientId === input.ingredientId &&
     movement.type === "WASTAGE" &&
-    Number(movement.quantity) === input.quantity
+    Number(movement.quantity) === -input.quantity
   );
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await apiAuth("SUPER_ADMIN", "ADMIN", "MANAGER");
   if (user instanceof Response) return user;
+  if (!user.storeId) return jsonError("Select a store before updating waste", 400);
+  const storeId = user.storeId;
 
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
@@ -59,7 +64,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!ingredientId || ingredientId.length > 191) {
     return jsonError("A valid ingredient is required", 400);
   }
-  if (typeof requestedQty !== "number" || !Number.isFinite(requestedQty) || requestedQty <= 0) {
+  if (typeof requestedQty !== "number" || !Number.isFinite(requestedQty) || requestedQty < 0.001) {
     return jsonError("Quantity must be a positive number", 400);
   }
   const qty = Math.round(requestedQty * 1000) / 1000;
@@ -75,15 +80,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return jsonError("A valid idempotency key is required", 400);
   }
 
-  const movementId = movementIdFor(idempotencyKey);
-  const requestIdentity = { recordId: id, ingredientId, quantity: qty };
+  const movementId = movementIdFor(storeId, idempotencyKey);
+  const requestIdentity = { storeId, recordId: id, ingredientId, quantity: qty };
 
   const runWriteOff = () =>
     prisma.$transaction(
       async (tx) => {
         const record = await tx.wasteRecord.findUnique({ where: { id } });
         if (!record) throw new WasteIngredientError("Waste record not found", 404);
-        if (user.storeId && record.storeId !== user.storeId) {
+        if (record.storeId !== storeId) {
           throw new WasteIngredientError("Forbidden", 403);
         }
         if (record.source === "ITEM_RETURN_READY_POOL") {
@@ -108,41 +113,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           };
         }
 
-        const ingredient = await tx.ingredient.findUnique({ where: { id: ingredientId } });
-        if (!ingredient) throw new WasteIngredientError("Ingredient not found", 404);
-
-        const available = Math.max(0, Number(ingredient.stockQty));
-        if (available < qty) {
-          throw new WasteIngredientError(
-            `${ingredient.name} has only ${available} available; ${qty} was requested`
-          );
+        const posted = await postStoreMovement(tx, {
+          storeId,
+          ingredientId,
+          quantityDelta: -qty,
+          movementId,
+          type: "WASTAGE",
+          wasteRecordId: id,
+          note: `Waste for ${record.source === "ORDER_CANCEL" ? "cancelled order" : "manual entry"}`,
+          insufficientPolicy: "REJECT",
+        });
+        if (!posted.movement) {
+          throw new WasteIngredientError("No ingredient stock was written off");
         }
-
-        const unitCost = ingredient.costPerUnit != null ? Number(ingredient.costPerUnit) : 0;
-        const lineCost = round2(unitCost * qty);
+        const movement = posted.movement;
+        const unitCost = movement.unitCost != null ? Number(movement.unitCost) : 0;
+        const lineCost = round2(unitCost * Math.abs(posted.actualDelta));
         if (!Number.isFinite(lineCost) || Number(record.totalCost) + lineCost > MAX_MONEY) {
           throw new WasteIngredientError("Waste value is too large", 400);
         }
-
-        const claimed = await tx.ingredient.updateMany({
-          where: { id: ingredient.id, stockQty: { gte: qty } },
-          data: { stockQty: { decrement: qty } },
-        });
-        if (claimed.count !== 1) {
-          throw new WasteIngredientError(`${ingredient.name} stock changed. Refresh and try again.`);
-        }
-
-        const movement = await tx.stockMovement.create({
-          data: {
-            id: movementId,
-            ingredientId: ingredient.id,
-            type: "WASTAGE",
-            quantity: qty,
-            unitCost: ingredient.costPerUnit != null ? unitCost : null,
-            wasteRecordId: id,
-            note: `Waste for ${record.source === "ORDER_CANCEL" ? "cancelled order" : "manual entry"}`,
-          },
-        });
         const updatedWaste = await tx.wasteRecord.update({
           where: { id: record.id },
           data: { totalCost: { increment: lineCost } },
@@ -171,6 +160,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return Response.json(result);
   } catch (error: unknown) {
+    if (error instanceof StoreStockError) {
+      if (error.status === 409) {
+        const committedMovement = await findCommittedMovement();
+        if (committedMovement) {
+          if (
+            committedMovement.wasteRecord?.storeId === storeId &&
+            matchesRequest(committedMovement, requestIdentity)
+          ) {
+            return Response.json({
+              movement: committedMovement,
+              wasteTotal: committedMovement.wasteRecord?.totalCost ?? null,
+              idempotent: true,
+            });
+          }
+          return jsonError(
+            "This idempotency key was already used with different waste details",
+            409
+          );
+        }
+      }
+      return jsonError(error.message, error.status);
+    }
     if (error instanceof WasteIngredientError) return jsonError(error.message, error.status);
     if ((error as any)?.code === "P2002" || (error as any)?.code === "P2034") {
       let committedMovement = await findCommittedMovement();
@@ -182,7 +193,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
       if (committedMovement) {
         if (
-          (!user.storeId || committedMovement.wasteRecord?.storeId === user.storeId) &&
+          committedMovement.wasteRecord?.storeId === storeId &&
           matchesRequest(committedMovement, requestIdentity)
         ) {
           return Response.json({

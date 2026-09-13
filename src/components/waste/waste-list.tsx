@@ -60,7 +60,7 @@ type IngredientAttempt = {
   idempotencyKey: string;
 };
 
-export function WasteList({ records, ingredients, userRole, todayTotal, todayCount }: any) {
+export function WasteList({ records, ingredients, userRole, todayTotal, todayCount, storeName }: any) {
   const router = useRouter();
   const manager = isManager(userRole);
 
@@ -108,7 +108,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
     0
   );
   const movementQty = records.reduce(
-    (s: number, r: any) => s + r.movements.reduce((x: number, m: any) => x + Number(m.quantity), 0),
+    (s: number, r: any) => s + r.movements.reduce((x: number, m: any) => x + Math.abs(Number(m.quantity)), 0),
     0
   );
 
@@ -184,7 +184,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
   const IngredientPicker = ({ rows, onChange }: any) => (
     <div className="space-y-2">
       {rows.map((r: IngredientRow, idx: number) => (
-        <div key={r.clientRowId} className="flex items-center gap-2">
+        <div key={r.clientRowId} className="grid grid-cols-[minmax(0,1fr)_5.5rem_auto] items-center gap-2">
           <Select
             value={r.ingredientId}
             onValueChange={(v) => {
@@ -199,6 +199,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
               {ingredients.map((ing: any) => (
                 <SelectItem key={ing.id} value={ing.id}>
                   {ing.name} ({Number(ing.stockQty)} {ing.unit})
+                  {ing.isStockConfigured === false ? " · not configured" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -207,7 +208,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
             type="number"
             min={0}
             step="any"
-            className="w-24"
+            className="w-full"
             value={r.quantity}
             onChange={(e) => {
               const next = rows.map((x: any, i: number) => (i === idx ? { ...x, quantity: e.target.value } : x));
@@ -238,16 +239,21 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
   );
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Waste &amp; Returns</h1>
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold">Waste &amp; Returns</h1>
+            <Badge variant="outline" className="max-w-full whitespace-normal text-left">
+              Outlet: {storeName}
+            </Badge>
+          </div>
           <p className="text-sm text-muted-foreground">
             Track returned food, actual inventory loss, cancellations, spillage, and expiry.
           </p>
         </div>
         {manager && (
-          <Button onClick={() => { resetIngredientRows(); setManualOpen(true); }}>
+          <Button className="w-full sm:w-auto" onClick={() => { resetIngredientRows(); setManualOpen(true); }}>
             <Plus className="h-4 w-4" /> Record waste
           </Button>
         )}
@@ -324,8 +330,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
                 <span className="text-xs font-semibold text-muted-foreground">Stock written off:</span>
                 {r.movements.map((m: any) => (
                   <span key={m.id} className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive">
-                    {m.ingredient.name} −{Number(m.quantity)}
-                    {m.ingredient.unit}
+                    {m.ingredient.name} −{Math.abs(Number(m.quantity))} {m.ingredient.unit}
                   </span>
                 ))}
               </div>
@@ -343,7 +348,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
       </div>
 
       <Dialog open={manualOpen} onOpenChange={(o) => !o && setManualOpen(false)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Record waste</DialogTitle>
           </DialogHeader>
@@ -366,8 +371,9 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
             <div className="space-y-1.5">
               <Label>Wasted items (lost value)</Label>
               {rows.map((r: any, idx: number) => (
-                <div key={idx} className="flex items-center gap-2">
+                <div key={idx} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_5.5rem_4.5rem_auto]">
                   <Input
+                    className="col-span-3 w-full sm:col-span-1"
                     placeholder="Item name"
                     value={r.name}
                     onChange={(e) => setRows(rows.map((x: any, i: number) => (i === idx ? { ...x, name: e.target.value } : x)))}
@@ -377,14 +383,14 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
                     min={0}
                     step="any"
                     placeholder="Cost ₹"
-                    className="w-24"
+                    className="w-full"
                     value={r.unitCost}
                     onChange={(e) => setRows(rows.map((x: any, i: number) => (i === idx ? { ...x, unitCost: e.target.value } : x)))}
                   />
                   <Input
                     type="number"
                     min={1}
-                    className="w-16"
+                    className="w-full"
                     value={r.quantity}
                     onChange={(e) => setRows(rows.map((x: any, i: number) => (i === idx ? { ...x, quantity: e.target.value } : x)))}
                   />
@@ -411,7 +417,7 @@ export function WasteList({ records, ingredients, userRole, todayTotal, todayCou
       </Dialog>
 
       <Dialog open={!!ingredientOpen} onOpenChange={(o) => !o && setIngredientOpen(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Write off ingredients from stock</DialogTitle>
           </DialogHeader>
