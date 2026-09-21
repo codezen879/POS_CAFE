@@ -124,7 +124,7 @@ export async function recordWasteForOrderItem(
       const storeIngredient = await ensureStoreIngredient(tx, { storeId, ingredientId });
       storeCosts.set(
         ingredientId,
-        Number(storeIngredient.costPerUnit ?? storeIngredient.ingredient.costPerUnit ?? 0)
+        Number(storeIngredient.costPerUnit ?? 0)
       );
     }
   }

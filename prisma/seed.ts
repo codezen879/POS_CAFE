@@ -236,10 +236,23 @@ async function main() {
   }
 
   // --- Suppliers & ingredients ---
+  const inventoryCategory = await prisma.inventoryCategory.upsert({
+    where: {
+      storeId_nameKey: { storeId: store.id, nameKey: "uncategorized" },
+    },
+    update: { name: "Uncategorized", isActive: true },
+    create: {
+      id: `inventory-category-${store.id}`,
+      storeId: store.id,
+      name: "Uncategorized",
+      nameKey: "uncategorized",
+      description: "Default category for seeded inventory products",
+    },
+  });
   const supplier = await prisma.supplier.upsert({
     where: { id: "supplier-1" },
-    update: {},
-    create: { id: "supplier-1", name: "Coffee Bean Co.", phone: "+91 90000 00001", contact: "Vendor" },
+    update: { storeId: store.id, nameKey: "coffee bean co." },
+    create: { id: "supplier-1", storeId: store.id, name: "Coffee Bean Co.", nameKey: "coffee bean co.", phone: "+91 90000 00001", contact: "Vendor" },
   });
   const ingredients = [
     { name: "Espresso Beans", unit: "kg", stock: 20, reorder: 5 },
@@ -276,6 +289,10 @@ async function main() {
         data: {
           storeId: store.id,
           ingredientId: ingredient.id,
+          name: i.name,
+          nameKey: i.name.toLocaleLowerCase("en-US"),
+          unit: i.unit,
+          categoryId: inventoryCategory.id,
           stockQty: i.stock,
           reorderLevel: i.reorder,
           costPerUnit: ingredient.costPerUnit,
@@ -283,7 +300,7 @@ async function main() {
         },
       });
 
-      await tx.stockMovement.create({
+      const movement = await tx.stockMovement.create({
         data: {
           id: seededOpeningMovementId(store.id, ingredient.id),
           storeId: store.id,
@@ -293,6 +310,20 @@ async function main() {
           quantity: i.stock,
           unitCost: ingredient.costPerUnit,
           note: "Seeded opening stock balance",
+        },
+      });
+      await tx.inventoryStockLayer.create({
+        data: {
+          id: `seed-layer-${store.id}-${ingredient.id}`,
+          storeId: store.id,
+          storeIngredientId: storeIngredient.id,
+          sourceMovementId: movement.id,
+          sourceType: "OPENING",
+          openingKey: storeIngredient.id,
+          originalQty: i.stock,
+          remainingQty: i.stock,
+          unitCost: Number(ingredient.costPerUnit ?? 0),
+          receivedAt: movement.createdAt,
         },
       });
     });

@@ -1,3 +1,5 @@
+import { lockIngredientMaster, lockSupplierMaster } from "@/lib/inventory/master-locks";
+
 const QUANTITY_PRECISION = 1000;
 const MAX_STOCK_MILLIUNITS = 999_999_999_999;
 const MAX_STOCK_QUANTITY = MAX_STOCK_MILLIUNITS / QUANTITY_PRECISION;
@@ -50,13 +52,6 @@ export class StoreStockError extends Error {
   }
 }
 
-function isUniqueConflict(error: unknown) {
-  return typeof error === "object"
-    && error !== null
-    && "code" in error
-    && error.code === "P2002";
-}
-
 function requiredId(value: string, label: string) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length > 191) {
@@ -98,23 +93,86 @@ function validateQuantityDelta(value: number) {
   return { milliunits, rounded };
 }
 
-function resolveUnitCost(value: number | null | undefined, fallback: unknown) {
-  if (value === null) return null;
-  const candidate = value === undefined && fallback != null ? Number(fallback) : value;
-  if (candidate == null) return null;
-  if (!Number.isFinite(candidate) || candidate < 0 || candidate > MAX_UNIT_COST) {
-    throw new StoreStockError("Unit cost is invalid", 400, "INVALID_COST");
+function requiredReceiptUnitCost(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > MAX_UNIT_COST) {
+    throw new StoreStockError(
+      "A positive unit cost is required when receiving stock",
+      400,
+      "UNIT_COST_REQUIRED"
+    );
   }
-  const rounded = Math.round(candidate * 100) / 100;
-  if (Math.abs(candidate - rounded) > 1e-9) {
+  const rounded = Math.round(value * 100) / 100;
+  if (Math.abs(value - rounded) > 1e-9) {
     throw new StoreStockError("Unit cost must use at most two decimal places", 400, "INVALID_COST");
   }
   return rounded;
 }
 
+function layerQuantityMilliunits(value: unknown) {
+  const quantity = Number(value);
+  const milliunits = toMilliunits(quantity);
+  if (
+    !Number.isFinite(quantity)
+    || !Number.isSafeInteger(milliunits)
+    || milliunits < 0
+    || Math.abs(quantity - milliunits / QUANTITY_PRECISION) > 1e-9
+  ) {
+    throw new StoreStockError(
+      "FIFO stock layer quantity is invalid",
+      409,
+      "INVALID_FIFO_LAYER"
+    );
+  }
+  return milliunits;
+}
+
+function layerUnitCostCents(value: unknown) {
+  const unitCost = Number(value);
+  const cents = Math.round(unitCost * 100);
+  if (
+    !Number.isFinite(unitCost)
+    || !Number.isSafeInteger(cents)
+    || unitCost < 0
+    || unitCost > MAX_UNIT_COST
+    || Math.abs(unitCost - cents / 100) > 1e-9
+  ) {
+    throw new StoreStockError("FIFO stock layer cost is invalid", 409, "INVALID_FIFO_LAYER");
+  }
+  return cents;
+}
+
+async function lockFifoLayers(tx: any, storeId: string, storeIngredientId: string) {
+  const candidates = await tx.inventoryStockLayer.findMany({
+    where: { storeId, storeIngredientId, remainingQty: { gt: 0 } },
+    orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+  });
+
+  // The StoreIngredient row is already locked, so all supported stock writers
+  // are serialized. Lock layer rows in FIFO order as a second line of defence.
+  // This raw query uses only portable table/id names on PostgreSQL and MySQL.
+  for (const candidate of candidates) {
+    await tx.$queryRaw`
+      SELECT id FROM inventory_stock_layers WHERE id = ${candidate.id} FOR UPDATE
+    `;
+  }
+
+  return tx.inventoryStockLayer.findMany({
+    where: { storeId, storeIngredientId, remainingQty: { gt: 0 } },
+    orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      remainingQty: true,
+      unitCost: true,
+      version: true,
+    },
+  });
+}
+
 /**
- * Ensures that a catalogue ingredient is configured for one caller-selected
- * store. Missing rows inherit configuration only; stock always starts at zero.
+ * Loads the outlet-owned inventory product for one backing ingredient.
+ * Products are never auto-provisioned into another outlet: doing that would
+ * leak catalogue definitions across outlets.
  */
 export async function ensureStoreIngredient(
   tx: any,
@@ -122,38 +180,19 @@ export async function ensureStoreIngredient(
 ) {
   const storeId = requiredId(input.storeId, "store");
   const ingredientId = requiredId(input.ingredientId, "ingredient");
-  const ingredient = await tx.ingredient.findUnique({ where: { id: ingredientId } });
-  if (!ingredient) {
+  await lockIngredientMaster(tx, ingredientId);
+  const storeIngredient = await tx.storeIngredient.findUnique({
+    where: { storeId_ingredientId: { storeId, ingredientId } },
+    include: {
+      ingredient: true,
+      category: true,
+      preferredSupplier: true,
+    },
+  });
+  if (!storeIngredient || storeIngredient.isActive === false) {
     throw new StoreStockError("Ingredient not found", 404, "INGREDIENT_NOT_FOUND");
   }
-
-  try {
-    return await tx.storeIngredient.upsert({
-      where: { storeId_ingredientId: { storeId, ingredientId } },
-      update: {},
-      create: {
-        storeId,
-        ingredientId,
-        stockQty: 0,
-        reorderLevel: ingredient.reorderLevel,
-        costPerUnit: ingredient.costPerUnit,
-        preferredSupplierId: ingredient.supplierId,
-      },
-      include: { ingredient: true },
-    });
-  } catch (error) {
-    // Prisma's MySQL upsert is read-then-create, so two first-use requests can
-    // race on the compound unique key. Abort this transaction and let the
-    // caller retry after the winning transaction commits.
-    if (isUniqueConflict(error)) {
-      throw new StoreStockError(
-        "Store stock was initialized by another request. Please retry.",
-        409,
-        "STOCK_CONFLICT"
-      );
-    }
-    throw error;
-  }
+  return storeIngredient;
 }
 
 /**
@@ -184,6 +223,37 @@ export async function postStoreMovement(
   }
 
   const requested = validateQuantityDelta(input.quantityDelta);
+  const receiptUnitCost = requested.milliunits > 0
+    ? requiredReceiptUnitCost(input.unitCost)
+    : null;
+  const storeIngredient = await ensureStoreIngredient(tx, { storeId, ingredientId });
+
+  // A locking read makes CLAMP deterministic under concurrent writers on both
+  // supported databases. The mapped table and id column are lowercase in both.
+  const lockedRows = await tx.$queryRaw`
+    SELECT * FROM store_ingredients WHERE id = ${storeIngredient.id} FOR UPDATE
+  `;
+  const locked = Array.isArray(lockedRows) ? lockedRows[0] : null;
+  if (!locked || locked.storeId !== storeId || locked.ingredientId !== ingredientId) {
+    throw new StoreStockError("Store ingredient not found", 404, "STORE_INGREDIENT_NOT_FOUND");
+  }
+
+  // Keep the shared lock order StoreIngredient -> Supplier. Outlet settings
+  // follows the same order, preventing a supplier/store deadlock.
+  if (supplierId) {
+    await lockSupplierMaster(tx, supplierId);
+    const supplier = await tx.supplier.findUnique({
+      where: { id: supplierId },
+      select: { storeId: true, isActive: true },
+    });
+    if (!supplier || supplier.storeId !== storeId) {
+      throw new StoreStockError("Supplier not found", 404, "SUPPLIER_NOT_FOUND");
+    }
+    if (!supplier.isActive) {
+      throw new StoreStockError("Select an active supplier", 409, "SUPPLIER_INACTIVE");
+    }
+  }
+
   if (wasteRecordId) {
     const wasteRecord = await tx.wasteRecord.findUnique({
       where: { id: wasteRecordId },
@@ -200,17 +270,6 @@ export async function postStoreMovement(
       );
     }
   }
-  const storeIngredient = await ensureStoreIngredient(tx, { storeId, ingredientId });
-
-  // A locking read makes CLAMP deterministic under concurrent writers on both
-  // supported databases. The mapped table and id column are lowercase in both.
-  const lockedRows = await tx.$queryRaw`
-    SELECT * FROM store_ingredients WHERE id = ${storeIngredient.id} FOR UPDATE
-  `;
-  const locked = Array.isArray(lockedRows) ? lockedRows[0] : null;
-  if (!locked || locked.storeId !== storeId || locked.ingredientId !== ingredientId) {
-    throw new StoreStockError("Store ingredient not found", 404, "STORE_INGREDIENT_NOT_FOUND");
-  }
 
   const currentMilliunits = toMilliunits(Number(locked.stockQty));
   if (!Number.isSafeInteger(currentMilliunits) || currentMilliunits < 0 || currentMilliunits > MAX_STOCK_MILLIUNITS) {
@@ -224,7 +283,7 @@ export async function postStoreMovement(
     if (requestedRemoval > currentMilliunits) {
       if (policy === "REJECT") {
         throw new StoreStockError(
-          `${storeIngredient.ingredient.name} has only ${currentMilliunits / QUANTITY_PRECISION} ${storeIngredient.ingredient.unit} available`,
+          `${storeIngredient.name} has only ${currentMilliunits / QUANTITY_PRECISION} ${storeIngredient.unit} available`,
           409,
           "INSUFFICIENT_STOCK"
         );
@@ -233,7 +292,7 @@ export async function postStoreMovement(
     }
   } else if (currentMilliunits + requested.milliunits > MAX_STOCK_MILLIUNITS) {
     throw new StoreStockError(
-      `${storeIngredient.ingredient.name} cannot exceed ${MAX_STOCK_QUANTITY.toLocaleString("en-IN")} ${storeIngredient.ingredient.unit}`,
+      `${storeIngredient.name} cannot exceed ${MAX_STOCK_QUANTITY.toLocaleString("en-IN")} ${storeIngredient.unit}`,
       409,
       "STOCK_LIMIT_EXCEEDED"
     );
@@ -259,6 +318,58 @@ export async function postStoreMovement(
 
   const actualDelta = actualMilliunits / QUANTITY_PRECISION;
   const resultingMilliunits = currentMilliunits + actualMilliunits;
+  const fifoLayers = await lockFifoLayers(tx, storeId, storeIngredient.id);
+  const layerBalanceMilliunits = fifoLayers.reduce(
+    (total: number, layer: any) => total + layerQuantityMilliunits(layer.remainingQty),
+    0
+  );
+  if (!Number.isSafeInteger(layerBalanceMilliunits) || layerBalanceMilliunits !== currentMilliunits) {
+    throw new StoreStockError(
+      "FIFO layer balance does not match the stored stock balance",
+      409,
+      "FIFO_BALANCE_MISMATCH"
+    );
+  }
+
+  const layerConsumptions: Array<{
+    id: string;
+    version: number;
+    quantityMilliunits: number;
+  }> = [];
+  let resolvedUnitCost = receiptUnitCost;
+  if (actualMilliunits < 0) {
+    let remainingToConsume = Math.abs(actualMilliunits);
+    let totalCostCentMilliunits = 0n;
+
+    for (const layer of fifoLayers) {
+      if (remainingToConsume === 0) break;
+      const availableMilliunits = layerQuantityMilliunits(layer.remainingQty);
+      const quantityMilliunits = Math.min(availableMilliunits, remainingToConsume);
+      if (quantityMilliunits === 0) continue;
+
+      const version = Number(layer.version);
+      if (!Number.isSafeInteger(version) || version < 0) {
+        throw new StoreStockError("FIFO stock layer version is invalid", 409, "INVALID_FIFO_LAYER");
+      }
+      totalCostCentMilliunits += BigInt(quantityMilliunits) * BigInt(layerUnitCostCents(layer.unitCost));
+      layerConsumptions.push({ id: layer.id, version, quantityMilliunits });
+      remainingToConsume -= quantityMilliunits;
+    }
+
+    if (remainingToConsume !== 0) {
+      throw new StoreStockError(
+        "FIFO layers do not contain enough stock for this movement",
+        409,
+        "FIFO_BALANCE_MISMATCH"
+      );
+    }
+
+    const consumedMilliunits = BigInt(Math.abs(actualMilliunits));
+    const weightedCostCents = (totalCostCentMilliunits + consumedMilliunits / 2n)
+      / consumedMilliunits;
+    resolvedUnitCost = Number(weightedCostCents) / 100;
+  }
+
   const currentVersion = Number(locked.version);
   if (!Number.isSafeInteger(currentVersion) || currentVersion < 0) {
     throw new StoreStockError("Stored stock version is invalid", 409, "INVALID_STOCK_VERSION");
@@ -275,6 +386,7 @@ export async function postStoreMovement(
     data: {
       stockQty: { increment: actualDelta },
       version: { increment: 1 },
+      ...(actualMilliunits > 0 ? { costPerUnit: receiptUnitCost } : {}),
     },
   });
   if (claimed.count !== 1) {
@@ -285,10 +397,31 @@ export async function postStoreMovement(
     );
   }
 
-  const resolvedUnitCost = resolveUnitCost(
-    input.unitCost,
-    locked.costPerUnit ?? storeIngredient.ingredient.costPerUnit
-  );
+  for (const consumption of layerConsumptions) {
+    const quantity = consumption.quantityMilliunits / QUANTITY_PRECISION;
+    const consumed = await tx.inventoryStockLayer.updateMany({
+      where: {
+        id: consumption.id,
+        storeId,
+        storeIngredientId: storeIngredient.id,
+        version: consumption.version,
+        remainingQty: { gte: quantity },
+      },
+      data: {
+        remainingQty: { decrement: quantity },
+        version: { increment: 1 },
+      },
+    });
+    if (consumed.count !== 1) {
+      throw new StoreStockError(
+        "FIFO stock changed while this movement was posted. Please retry.",
+        409,
+        "STOCK_CONFLICT"
+      );
+    }
+  }
+
+  const movementAt = new Date();
   const movement = await tx.stockMovement.create({
     data: {
       ...(movementId ? { id: movementId } : {}),
@@ -301,11 +434,30 @@ export async function postStoreMovement(
       supplierId,
       wasteRecordId,
       note,
+      createdAt: movementAt,
     },
   });
+  if (actualMilliunits > 0) {
+    await tx.inventoryStockLayer.create({
+      data: {
+        storeId,
+        storeIngredientId: storeIngredient.id,
+        sourceMovementId: movement.id,
+        sourceType: input.type,
+        originalQty: actualDelta,
+        remainingQty: actualDelta,
+        unitCost: resolvedUnitCost!,
+        receivedAt: movementAt,
+      },
+    });
+  }
   const updated = await tx.storeIngredient.findUniqueOrThrow({
     where: { id: storeIngredient.id },
-    include: { ingredient: true },
+    include: {
+      ingredient: true,
+      category: true,
+      preferredSupplier: true,
+    },
   });
 
   return {
@@ -322,10 +474,19 @@ export async function postStoreMovement(
 export function toIngredientStockDto(storeIngredient: any) {
   return {
     ...storeIngredient.ingredient,
+    id: storeIngredient.ingredientId,
+    name: storeIngredient.name,
+    unit: storeIngredient.unit,
+    description: storeIngredient.description ?? null,
+    categoryId: storeIngredient.categoryId,
+    category: storeIngredient.category ?? null,
+    dailyStockTracking: storeIngredient.dailyStockTracking,
+    isActive: storeIngredient.isActive,
     stockQty: storeIngredient.stockQty,
     reorderLevel: storeIngredient.reorderLevel,
-    costPerUnit: storeIngredient.costPerUnit ?? storeIngredient.ingredient?.costPerUnit ?? null,
-    supplierId: storeIngredient.preferredSupplierId ?? storeIngredient.ingredient?.supplierId ?? null,
+    costPerUnit: storeIngredient.costPerUnit ?? null,
+    supplierId: storeIngredient.preferredSupplierId ?? null,
+    supplier: storeIngredient.preferredSupplier ?? null,
     storeIngredientId: storeIngredient.id,
     storeId: storeIngredient.storeId,
     stockVersion: storeIngredient.version,

@@ -11,6 +11,55 @@ const STOCK_ACTIONS = new Set(["RECEIVE", "ISSUE"]);
 const QUANTITY_PRECISION = 1000;
 const MAX_STOCK_MILLIUNITS = 999_999_999_999;
 const MAX_STOCK_QUANTITY = MAX_STOCK_MILLIUNITS / QUANTITY_PRECISION;
+const MAX_UNIT_COST = 99_999_999.99;
+
+const replayMovementSelect = {
+  id: true,
+  storeId: true,
+  storeIngredientId: true,
+  ingredientId: true,
+  type: true,
+  quantity: true,
+  unitCost: true,
+  supplierId: true,
+  wasteRecordId: true,
+  note: true,
+  createdAt: true,
+  storeIngredient: {
+    select: {
+      id: true,
+      storeId: true,
+      ingredientId: true,
+      name: true,
+      unit: true,
+      description: true,
+      categoryId: true,
+      dailyStockTracking: true,
+      stockQty: true,
+      reorderLevel: true,
+      costPerUnit: true,
+      preferredSupplierId: true,
+      isActive: true,
+      version: true,
+      category: {
+        select: { id: true, name: true, isActive: true },
+      },
+      preferredSupplier: {
+        select: { id: true, name: true, isActive: true },
+      },
+      ingredient: {
+        select: {
+          id: true,
+          name: true,
+          unit: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+    },
+  },
+} as const;
 
 class StockRequestError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -47,6 +96,13 @@ export async function POST(req: Request) {
     : Number.NaN;
   const quantity = quantityMilliunits / QUANTITY_PRECISION;
   const note = typeof body.note === "string" ? body.note.trim() : "";
+  const rawUnitCost = body.unitCost;
+  const unitCost = typeof rawUnitCost === "number" ? rawUnitCost : Number.NaN;
+  const supplierId = body.supplierId == null
+    ? null
+    : typeof body.supplierId === "string"
+      ? body.supplierId.trim()
+      : "";
   const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
 
   if (!ingredientId || ingredientId.length > 191) {
@@ -67,6 +123,24 @@ export async function POST(req: Request) {
   if (action === "ISSUE" && !note) {
     return Response.json({ error: "A reason is required when issuing stock" }, { status: 400 });
   }
+  if (
+    action === "RECEIVE"
+    && (
+      typeof rawUnitCost !== "number"
+      || !Number.isFinite(unitCost)
+      || unitCost <= 0
+      || unitCost > MAX_UNIT_COST
+      || Math.abs(unitCost * 100 - Math.round(unitCost * 100)) > 1e-7
+    )
+  ) {
+    return Response.json(
+      { error: "Unit cost must be greater than zero with at most 2 decimal places" },
+      { status: 400 }
+    );
+  }
+  if (supplierId !== null && (!supplierId || supplierId.length > 191)) {
+    return Response.json({ error: "A valid supplier is required" }, { status: 400 });
+  }
   if (!/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) {
     return Response.json({ error: "A valid request key is required" }, { status: 400 });
   }
@@ -81,25 +155,35 @@ export async function POST(req: Request) {
     ingredientId: string;
     type: string;
     quantity: unknown;
+    unitCost: unknown;
+    supplierId: string | null;
     note: string | null;
   }) {
     return movement.storeId === storeId
       && movement.ingredientId === ingredientId
       && movement.type === movementType
       && Number(movement.quantity) === movementQuantity
+      && (
+        action !== "RECEIVE"
+        || (
+          Number(movement.unitCost) === unitCost
+          && movement.supplierId === supplierId
+        )
+      )
       && (movement.note ?? "") === movementNote;
   }
 
   async function findReplayResponse() {
     const movement = await prisma.stockMovement.findUnique({
       where: { id: movementId },
-      include: { storeIngredient: { include: { ingredient: true } } },
+      select: replayMovementSelect,
     });
     if (!movement) return null;
     if (matchesRequest(movement)) {
+      const { storeIngredient, ...safeMovement } = movement;
       return Response.json({
-        ingredient: toIngredientStockDto(movement.storeIngredient),
-        movement,
+        ingredient: toIngredientStockDto(storeIngredient),
+        movement: safeMovement,
         replayed: true,
       });
     }
@@ -113,15 +197,16 @@ export async function POST(req: Request) {
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.stockMovement.findUnique({
         where: { id: movementId },
-        include: { storeIngredient: { include: { ingredient: true } } },
+        select: replayMovementSelect,
       });
       if (existing) {
         if (!matchesRequest(existing)) {
           throw new StockRequestError("This request key was already used for a different stock change", 409);
         }
+        const { storeIngredient, ...safeMovement } = existing;
         return {
-          ingredient: toIngredientStockDto(existing.storeIngredient),
-          movement: existing,
+          ingredient: toIngredientStockDto(storeIngredient),
+          movement: safeMovement,
           replayed: true,
         };
       }
@@ -132,6 +217,8 @@ export async function POST(req: Request) {
         movementId,
         type: movementType,
         quantityDelta: movementQuantity,
+        unitCost: action === "RECEIVE" ? unitCost : undefined,
+        supplierId: action === "RECEIVE" ? supplierId : undefined,
         note: movementNote,
         insufficientPolicy: "REJECT",
       });

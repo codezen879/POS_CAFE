@@ -409,12 +409,12 @@ Comprehensive functional, UI, UX, and security test cases for the POS Cafe webap
 # SECTION 10 — INVENTORY
 
 ### INV-001 Adjust stock IN
-**Steps:** Sign in to an outlet-assigned manager account → Inventory → Adjust → Receive → quantity → optional reason.
-**Expected:** A positive `PURCHASE` movement is recorded for that outlet, its `StoreIngredient.stockQty` increases, the catalogue-level legacy quantity is unchanged, and the toast says "Stock received".
+**Steps:** Sign in to an outlet-assigned manager account → Inventory → Adjust → Receive → enter quantity, required unit cost, optional supplier/reason.
+**Expected:** A positive `PURCHASE` movement and one linked FIFO layer are recorded for that outlet at the entered cost; `StoreIngredient.stockQty` increases, the catalogue-level legacy quantity is unchanged, and the toast says "Stock received". Missing/zero cost is rejected atomically.
 
 ### INV-002 Adjust stock OUT
 **Steps:** Adjust → Issue → quantity → required reason.
-**Expected:** A negative `ADJUSTMENT` movement is recorded for that outlet and its stock decreases. The request is rejected when the reason is empty.
+**Expected:** A negative `ADJUSTMENT` movement is recorded, the outlet stock decreases, and FIFO layers are reduced oldest-first by the same quantity. The request is rejected when the reason is empty.
 
 ### INV-003 Out-of-stock / below-zero
 **Steps:** Attempt to issue more than the selected outlet currently holds.
@@ -434,7 +434,7 @@ Comprehensive functional, UI, UX, and security test cases for the POS Cafe webap
 
 ### INV-007 Waste write-off isolation
 **Steps:** Record ingredient waste in outlet A, then inspect that ingredient and the waste ledger in outlets A and B.
-**Expected:** Only outlet A stock decreases and receives the negative `WASTAGE` movement. Outlet B is unchanged. A waste record from another outlet cannot be updated by ID.
+**Expected:** Only outlet A stock and its oldest available FIFO layers decrease and receive the negative `WASTAGE` movement. Outlet B is unchanged. A waste record from another outlet cannot be updated by ID.
 
 ### INV-008 Concurrent and repeated adjustments
 **Steps:** Submit the same adjustment twice with one request key, then submit two different issue requests concurrently near the available balance.
@@ -448,9 +448,53 @@ Comprehensive functional, UI, UX, and security test cases for the POS Cafe webap
 **Steps:** Place a normal order for an item linked to a recipe.
 **Expected:** Normal sale consumption remains manual/not enabled yet. Defect and waste flows do deduct the recipe from the order's outlet.
 
-### INV-011 Supplier list
-**Steps:** Inventory → view suppliers.
-**Expected:** Suppliers listed/readable; manage if supported.
+### INV-011 Outlet product master permissions
+**Steps:** As an outlet-assigned Admin, add and edit a product with category, base unit, reorder level, reference cost, supplier, description, and daily-tracking setting. Repeat master write requests as Manager, Cashier, Waiter, and Kitchen.
+**Expected:** Admin/Super Admin can save valid product definitions only for their assigned outlet. Manager and operational roles receive `403`; Manager can still adjust the assigned outlet's stock and change outlet settings.
+
+### INV-012 Supplier master lifecycle
+**Steps:** As Admin in outlet A, add and edit a supplier, then deactivate and reactivate it from the Suppliers tab. Open outlet B.
+**Expected:** Contact information is saved only for outlet A, the status filter finds active/inactive suppliers, outlet B cannot see or address the supplier by ID, and an inactive supplier cannot be newly assigned.
+
+### INV-013 Product deactivation safety
+**Steps:** Try to deactivate an outlet product used in a recipe or with a positive balance. Then try an unused, zero-balance product.
+**Expected:** Used/in-stock products are rejected with a clear explanation. The unused product is soft-deactivated without deleting history and can be reactivated.
+
+### INV-014 Product unit immutability
+**Steps:** Change the unit of a new zero-stock product, then try changing it after opening stock, a recipe link, or a stock movement exists.
+**Expected:** The unused unit change succeeds. Once quantities depend on that unit, the API returns `409` and the UI explains that the unit is locked.
+
+### INV-015 Outlet inventory settings
+**Steps:** As an outlet-assigned Manager, edit a product's reorder level, reference cost, preferred supplier, and daily-tracking setting.
+**Expected:** Only the existing outlet-owned `StoreIngredient` is updated; its stock quantity, FIFO layers, and movement ledger do not change, and another outlet's product ID cannot be configured.
+
+### INV-016 Inventory search, status, and responsive layout
+**Steps:** Search long product/category/supplier names, use category and Active/Inactive/All filters as Admin, and repeat at 360 px width.
+**Expected:** Matching cards remain readable, controls wrap without horizontal page overflow, dialogs scroll within the viewport, and inactive records are not exposed to Manager selections.
+
+### INV-017 Direct page authorization
+**Steps:** As Cashier, Waiter, or Kitchen, navigate directly to `/inventory`.
+**Expected:** Access is denied by the server-side page guard; stock, suppliers, and movements are not included in the response.
+
+### INV-018 Outlet category isolation
+**Steps:** Create `Dairy` in outlets A and B. Rename A's category, then call A's category endpoint while authenticated in B.
+**Expected:** The same normalized name is allowed once per outlet; B cannot read or change A's category by direct ID. A category with active products cannot be deactivated.
+
+### INV-019 Atomic opening stock and FIFO layer
+**Steps:** Create Milk with `10 l` opening stock at `₹50/l`, then inspect the outlet product, movements, and `inventory_stock_layers`. Repeat with zero opening stock and force one invalid request.
+**Expected:** The positive opening creates exactly one product, one positive `STOCKTAKE` movement, and one linked `OPENING` layer with original/remaining `10` at `₹50`. Zero opening creates no movement/layer. An invalid or failed request leaves no partial rows.
+
+### INV-020 Opening stock validation
+**Steps:** Submit positive opening stock without cost, zero/negative values, quantity with more than three decimals, and cost with more than two decimals.
+**Expected:** Each invalid request is rejected without creating a product. Zero opening stock may omit cost; positive opening requires a cost greater than zero.
+
+### INV-021 Daily tracking persistence
+**Steps:** Create one product with Daily Stock Tracking enabled and one disabled; toggle both through product/outlet settings and reload.
+**Expected:** The flags persist independently for the current outlet, the Daily-count KPI updates, and no stock movement or FIFO layer changes.
+
+### INV-022 FIFO across purchase prices
+**Steps:** Open Milk with `10 l` at `₹50/l`, receive another `10 l` at `₹60/l`, then issue `12 l`.
+**Expected:** The `₹50` layer reaches zero, the `₹60` layer retains `8 l`, total stock is `8 l`, and the issue movement uses the FIFO-derived cost. Replaying any request key changes neither the balance nor its layers a second time.
 
 ---
 

@@ -48,7 +48,13 @@ export default async function DashboardPage() {
           },
           orderBy: { stockQty: "asc" },
           take: 6,
-          include: { ingredient: { select: { id: true, name: true, unit: true } } },
+          select: {
+            ingredientId: true,
+            name: true,
+            unit: true,
+            stockQty: true,
+            reorderLevel: true,
+          },
         })
       : Promise.resolve([]),
     prisma.orderItem.groupBy({
@@ -78,9 +84,9 @@ export default async function DashboardPage() {
         session: { table: o.session?.table ? { tableName: o.session.table.tableName } : null },
       })) as any}
       lowStock={lowStock.map((i: any) => ({
-        id: i.ingredient.id,
-        name: i.ingredient.name,
-        unit: i.ingredient.unit,
+        id: i.ingredientId,
+        name: i.name,
+        unit: i.unit,
         stockQty: Number(i.stockQty),
         reorderLevel: Number(i.reorderLevel),
       })) as any}

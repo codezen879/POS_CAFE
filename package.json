@@ -15,6 +15,10 @@
     "db:deploy:waiter-workflow:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260909190000_waiter_kitchen_workflow/migration.sql",
     "db:deploy:store-inventory:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260913120000_store_inventory_isolation/migration.sql",
     "db:deploy:store-inventory:mysql": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations-mysql/20260913120000_store_inventory_isolation/migration.sql",
+    "db:deploy:inventory-masters:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260914010000_inventory_master_data/migration.sql",
+    "db:deploy:inventory-masters:mysql": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations-mysql/20260914010000_inventory_master_data/migration.sql",
+    "db:deploy:inventory-catalogue:pg": "prisma db execute --schema prisma/schema.postgres.prisma --file prisma/migrations-postgres/20260920010000_inventory_catalogue_phase_one/migration.sql",
+    "db:deploy:inventory-catalogue:mysql": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations-mysql/20260920010000_inventory_catalogue_phase_one/migration.sql",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:pg": "tsx prisma/seed.pg.ts",
     "db:studio": "prisma studio"

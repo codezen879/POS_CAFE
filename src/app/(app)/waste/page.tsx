@@ -24,7 +24,7 @@ export default async function WastePage() {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
 
-  const [records, catalogue, storeInventory, todayAgg, store] = await Promise.all([
+  const [rawRecords, storeInventory, todayAgg, store] = await Promise.all([
     prisma.wasteRecord.findMany({
       where: { storeId },
       orderBy: { recordedAt: "desc" },
@@ -33,19 +33,27 @@ export default async function WastePage() {
         items: true,
         movements: {
           where: { storeId },
-          include: { ingredient: { select: { id: true, name: true, unit: true } } },
+          include: {
+            storeIngredient: {
+              select: { ingredientId: true, name: true, unit: true },
+            },
+          },
         },
         recordedBy: { select: { id: true, name: true } },
         order: { select: { id: true, orderNumber: true } },
       },
     }),
-    prisma.ingredient.findMany({
-      select: { id: true, name: true, unit: true, costPerUnit: true },
-      orderBy: { name: "asc" },
-    }),
     prisma.storeIngredient.findMany({
-      where: { storeId },
-      select: { id: true, ingredientId: true, stockQty: true, costPerUnit: true },
+      where: { storeId, isActive: true },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        ingredientId: true,
+        name: true,
+        unit: true,
+        stockQty: true,
+        costPerUnit: true,
+      },
     }),
     prisma.wasteRecord.aggregate({
       where: {
@@ -58,19 +66,26 @@ export default async function WastePage() {
     prisma.store.findUnique({ where: { id: storeId }, select: { name: true } }),
   ]);
 
-  const inventoryByIngredient = new Map(
-    storeInventory.map((stock) => [stock.ingredientId, stock])
-  );
-  const ingredients = catalogue.map((ingredient) => {
-    const stock = inventoryByIngredient.get(ingredient.id);
-    return {
-      ...ingredient,
-      stockQty: stock?.stockQty ?? 0,
-      costPerUnit: stock?.costPerUnit ?? ingredient.costPerUnit,
-      storeIngredientId: stock?.id ?? null,
-      isStockConfigured: Boolean(stock),
-    };
-  });
+  const ingredients = storeInventory.map((stock) => ({
+    id: stock.ingredientId,
+    name: stock.name,
+    unit: stock.unit,
+    stockQty: stock.stockQty,
+    costPerUnit: stock.costPerUnit,
+    storeIngredientId: stock.id,
+    isStockConfigured: true,
+  }));
+  const records = rawRecords.map((record) => ({
+    ...record,
+    movements: record.movements.map((movement) => ({
+      ...movement,
+      ingredient: {
+        id: movement.storeIngredient.ingredientId,
+        name: movement.storeIngredient.name,
+        unit: movement.storeIngredient.unit,
+      },
+    })),
+  }));
 
   return (
     <WasteList
