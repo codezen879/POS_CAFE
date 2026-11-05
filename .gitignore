@@ -35,4 +35,5 @@ next-env.d.ts
 
 .vercel
 prod-server.log
+dev-server.log
 

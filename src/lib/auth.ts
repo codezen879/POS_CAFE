@@ -3,6 +3,11 @@ import Credentials from "next-auth/providers/credentials";
 import { compare } from "bcryptjs";
 import { prisma } from "./prisma";
 
+if (process.env.VERCEL) {
+  const host = process.env.VERCEL_PROJECT_PRODUCTION_URL ?? process.env.VERCEL_URL;
+  if (host) process.env.AUTH_URL = `https://${host}`;
+}
+
 async function findUser(idOrEmail: string) {
   return prisma.user.findFirst({
     where: {

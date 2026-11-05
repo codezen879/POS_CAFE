@@ -53,6 +53,20 @@ async function main() {
     },
   });
 
+  const sanchitPassword = await hash("sanchit@123", 10);
+
+  await prisma.user.upsert({
+    where: { email: "sanchit@gmail.com" },
+    update: { passwordHash: sanchitPassword, role: "ADMIN", isActive: true },
+    create: {
+      email: "sanchit@gmail.com",
+      name: "Sanchit Admin",
+      passwordHash: sanchitPassword,
+      role: "ADMIN",
+      storeId: store.id,
+    },
+  });
+
   await prisma.user.upsert({
     where: { email: "cashier@poscafe.example" },
     update: {},
